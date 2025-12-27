@@ -118,30 +118,7 @@ class HostToolboxes:
                 
         del self.__server_tasks
 
-    async def __start_fastapi(self, at):
-        self.__uvicorn_server = uvicorn.Server(uvicorn.Config(
-            app=self.__app,
-            host=at[0],
-            port=at[1],
-            loop="asyncio"
-        ))
-
-        await self.__uvicorn_server.serve()
-
-    async def __broker_subscribe_tools(self):
-        for name, tb in self.__tool_boxes.items():
-            for tool in tb.tools:
-                topic = f"{EndPoints.RUN_TOOL.value}/{name}/{tool}"
-                await self.__broker.subscribe(topic=topic, qos=2)
-                logging.info(f"Subscribed to {topic}")
-
-    async def __broker_send_tool_response(self, res: ToolResponse):
-        topic = f"{EndPoints.TOOL_RESPONSES.value}/{res.run_id}"
-        logging.info(f"Responding to tool request @ {topic}, {res.status.name}")
-        
-        payload = res.model_dump_json().encode("utf-8")
-        return asyncio.create_task(self.__broker.publish(topic=topic, payload=payload,qos=2,retain=True))
-
+    #region tool stuff
     async def __use_tool(self, toolbox: ToolBox, req: RunToolRequest) -> ToolResponse:
         errors = []
         
@@ -174,6 +151,22 @@ class HostToolboxes:
     def __tool_task_cb(self, task: asyncio.Task):
         if task.done():
             asyncio.create_task(self.__broker_send_tool_response(task.result()))
+    #endregion
+
+    #region Broker stuff
+    async def __broker_subscribe_tools(self):
+        for name, tb in self.__tool_boxes.items():
+            for tool in tb.tools:
+                topic = f"{EndPoints.RUN_TOOL.value}/{name}/{tool}"
+                await self.__broker.subscribe(topic=topic, qos=2)
+                logging.info(f"Subscribed to {topic}")
+
+    async def __broker_send_tool_response(self, res: ToolResponse):
+        topic = f"{EndPoints.TOOL_RESPONSES.value}/{res.run_id}"
+        logging.info(f"Responding to tool request @ {topic}, {res.status.name}")
+        
+        payload = res.model_dump_json().encode("utf-8")
+        return asyncio.create_task(self.__broker.publish(topic=topic, payload=payload,qos=2,retain=True))
 
     async def __broker_message_handler(self):
         if not self.__broker._client.is_connected():
@@ -243,8 +236,20 @@ class HostToolboxes:
             except MqttError as e:
                 logging.exception(e)
                 time.sleep(3)
+    
+    #endregion Broker stuff
 
-    #region Endpoint methods
+    #region Http server
+    async def __start_fastapi(self, at):
+        self.__uvicorn_server = uvicorn.Server(uvicorn.Config(
+            app=self.__app,
+            host=at[0],
+            port=at[1],
+            loop="asyncio"
+        ))
+
+        await self.__uvicorn_server.serve()
+        
     # TODO: Expand
     @cache
     def __root_endpoint(self) -> dict:
@@ -269,7 +274,7 @@ class HostToolboxes:
         self.__app.add_api_route(EndPoints.ROOT.value, self.__root_endpoint, methods=["GET"])
         self.__app.add_api_route(EndPoints.OFFERS.value, self.__offers_endpoint, methods=["GET"])
 
-    #endregion Endpoint methods
+    #endregion Http server
 
     async def serve(self, at: tuple[str, int]=("127.0.0.1", 80), messaging_broker: BrokerParams | None = None) -> None:
         """
