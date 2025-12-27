@@ -3,7 +3,7 @@ import logging
 import os
 import random
 
-from server.host import HostToolboxes, BrokerParams
+from server.host import HostToolboxes, BrokerConnectionString
 from server.schema import Version
 from server.tooling import ToolBox
 from dotenv import load_dotenv
@@ -15,7 +15,7 @@ load_dotenv(".env.local", override=True)
 VERSION="21_12_2025-dev-1234-testing"
 TOOLBOX_NAME = "TestingToolbox"
 
-BROKER_PARAMS = BrokerParams(os.getenv("BROKER"))
+BROKER_PARAMS = BrokerConnectionString(os.getenv("BROKER"))
 
 logging.basicConfig(level=logging.INFO)
 
@@ -24,4 +24,4 @@ if __name__ == "__main__":
     
     i = HostToolboxes([tb], Version.parse(VERSION))
 
-    asyncio.run(i.serve(messaging_broker=BROKER_PARAMS, at=("127.0.0.1", random.randint(80, 100))))
+    asyncio.run(i.serve(messaging_broker=BROKER_PARAMS, at=("127.0.0.1", 80)))

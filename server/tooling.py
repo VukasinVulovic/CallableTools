@@ -1,6 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Callable
 from server import schema
 from server.decorators import generate_method_schema
 from server.common.exceptions import *
@@ -10,7 +10,11 @@ import inspect
 from server.helpers.schema import SchemaParser
 
 import tracemalloc
+
+from server.models import RunToolRequest
 tracemalloc.start()
+
+#TODO: add validate_tool
 
 class ToolBox:
     __schema__: schema.ToolBox = None
@@ -59,23 +63,24 @@ class ToolBox:
             tool_groups=[str(t) for t in tool_groups]
         )
 
-    # @cache
-    async def use_tool(self, tool_name=str, params=dict) -> Any:
-        func = self.__tools.get(tool_name or "\\")
+    def deserialize_request(self, req: RunToolRequest) -> tuple[Callable, dict]:
+        func = self.__tools.get(req.tool_name or "\\")
 
         if func is None:
             raise ToolNotFoundException()
-        
-        params = SchemaParser.try_parse_params(func.__schema__, params)
+                
+        return (func, SchemaParser.try_parse_params(func.__schema__, req.parameters))
 
+    # @cache
+    async def execute(self, func=tuple[Callable, dict]) -> Any:
         try:
-            if asyncio.iscoroutinefunction(func):
+            if asyncio.iscoroutinefunction(func[0]):
                 # func is async
-                outputs = await func(**params)
+                outputs = await func(**func[1])
             else:
                 # func is blocking -> run in thread pool
                 loop = asyncio.get_running_loop()
-                outputs = await loop.run_in_executor(self._executor, lambda: func(**params))
+                outputs = await loop.run_in_executor(self._executor, lambda: func[0](**func[1]))
         except Exception as e:
             raise ToolRuntimeException(str(e)) #no trace
         

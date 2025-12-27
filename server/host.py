@@ -2,20 +2,17 @@ from enum import Enum
 from hashlib import md5
 import json
 import logging
-import sys
-import time
-from urllib.parse import unquote
+from typing import Callable
 
 from dataclasses_json import dataclass_json
 from fastapi.responses import JSONResponse
 from server.common.exceptions import CouldNotParseToolRequestException, ToolNotFoundException, ToolRuntimeException, ToolValidationException
 from server.schema import Version
 from server.tooling import ToolBox
-import re
 import asyncio
 import uvicorn
 from fastapi import FastAPI, Request
-from aiomqtt import Client as MQTTClient, MqttError
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR, HTTP_404_NOT_FOUND
@@ -25,9 +22,7 @@ from functools import cache
 from server.models import RunToolRequest, ToolResponse, ToolStatus
 from server.helpers.schema import SchemaSerializer
 
-
-if sys.platform.startswith("win"): #Windows bs :D
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+from server.broker import BrokerConnectionString, MessagingBroker
 
 @dataclass_json
 @dataclass
@@ -39,29 +34,6 @@ class ErrorResponseType:
 class ServicesType:
     brokers: list[str]
     offer_endpoint: list[str]
-
-@dataclass
-class BrokerParams:
-    host: str
-    port: int
-    username: str | None
-    password: str | None
-
-    def __init__(self, conn_str: str):
-        m = re \
-            .compile(
-                r'^mqtt:\/\/(?:(?P<user>[^:\/@]+)(?::(?P<password>[^@\/]+))?@)?'
-                r'(?P<host>[^:\/]+)(?::(?P<port>\d+))?$'
-            ) \
-            .match(conn_str) \
-            .groupdict().items()
-        
-        parsed = { k: unquote(v) if v else None for k, v in m }
-
-        self.host = parsed["host"]
-        self.port = int(parsed.get("port", 1883))
-        self.username = parsed.get("user")
-        self.password = parsed.get("password")
 
 class _ErrorHandlingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -104,6 +76,7 @@ class HostToolboxes:
     __app: FastAPI
     __uvicorn_server: uvicorn.Server
     __server_tasks: list
+    __broker: MessagingBroker = None
 
     def __init__(self, tool_boxes: set[ToolBox], service_version: Version):
         self.__app = FastAPI()
@@ -119,32 +92,17 @@ class HostToolboxes:
         del self.__server_tasks
 
     #region tool stuff
-    async def __use_tool(self, toolbox: ToolBox, req: RunToolRequest) -> ToolResponse:
-        errors = []
-        
+    async def __use_tool(self, toolbox: ToolBox, req: RunToolRequest, func=tuple[Callable, dict]) -> ToolResponse:        
         try:
-            try:
-                out = await toolbox.use_tool(req.tool_name, req.parameters)
-            except* ToolValidationException as e:
-                if type(e) is ExceptionGroup:
-                    for ex in e.exceptions:
-                        errors.append(str(ex))  
-                else:
-                    errors.append(str(e))              
+            out = await toolbox.execute(func)
         except ToolRuntimeException as e:
-            if type(e) is ExceptionGroup:
-                for ex in e.exceptions:
-                    errors.append(str(ex))  
-            else:
-                errors.append(str(e))    
+            return ToolResponse.build(req=req, status=ToolStatus.PROCESSED, output=str(e), success=False)
+
         except Exception as e:
             logging.exception(e)
             return ToolResponse.build(req=req, status=ToolStatus.PROCESSED, output="Internal server error", success=False)
             
         #TODO: serialize complex types
-        
-        if len(errors) > 0:
-            return ToolResponse.build(req=req, status=ToolStatus.PROCESSED, output=",".join(errors), success=False)
         
         return ToolResponse.build(req=req, status=ToolStatus.PROCESSED, output=str(out), success=True)
         
@@ -168,75 +126,63 @@ class HostToolboxes:
         payload = res.model_dump_json().encode("utf-8")
         return asyncio.create_task(self.__broker.publish(topic=topic, payload=payload,qos=2,retain=True))
 
-    async def __broker_message_handler(self):
-        if not self.__broker._client.is_connected():
-            raise MqttError("Not connected")
+    async def __broker_message_handler(self, topic: str, msg: bytes):
+        logging.info(f"New Broker message @ {topic}")
+        validation_errors = []
         
-        await self.__broker_subscribe_tools()
-    
-        async with self.__broker.messages() as queue:
-            async for msg in queue:
-                logging.info(f"New Broker message @ {msg.topic}")
-                #TODO: Validate path
-                topic_split = msg.topic.value.split("/")
-                
-                try:
-                    req = RunToolRequest.try_parse(msg.payload.decode("utf-8"))
-                    req.tool_box_name = topic_split[-3]
-                    req.tool_name = ".".join(topic_split[-2:])
-                    tb = self.__tool_boxes.get(req.tool_box_name, None)
-                    
-                    if tb is None:
-                        raise ToolNotFoundException()
-                    
-                    asyncio \
-                        .create_task(self.__use_tool(tb, req))\
-                        .add_done_callback(self.__tool_task_cb)
-                except CouldNotParseToolRequestException as e:
-                    logging.error(e)
-                
-                except (ToolValidationException, ToolNotFoundException) as e:
-                    asyncio.create_task(self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.REJECTED, output=str(e))))
-
-    async def __run_broker(self, broker: BrokerParams, server_host: str):    
-        while True: #auto reconnect loop
+        topic_split = topic.split("/")
+        
+        try:
             try:
-                if self.__broker:
-                    try:
-                        await self.__broker.disconnect()
-                    except Exception as e:
-                        logging.warning(f"Broker disconnect error {e}, retrying...")
+                req = RunToolRequest.try_parse(msg.decode("utf-8"))
+                req.tool_box_name = topic_split[-3]
+                req.tool_name = ".".join(topic_split[-2:])
+                tb = self.__tool_boxes.get(req.tool_box_name, None)
                 
-                client_id = "ToolboxRunner_" \
-                    + md5(
-                        (
-                            "".join(self.__tool_boxes.keys()) \
-                                + __file__ \
-                                + server_host[0] \
-                                + str(server_host[1])
-                        ).encode("utf-8")
-                    ).hexdigest()
+                if tb is None:
+                    raise ToolNotFoundException()
                 
-                self.__broker = MQTTClient(
-                    broker.host, 
-                    broker.port, 
-                    clean_session=False,
-                    client_id=client_id, 
-                    password=broker.password, 
-                    username=broker.username
-                )
+                (func, params) = tb.deserialize_request(req)
                 
-                await self.__broker.connect()
+                asyncio \
+                    .create_task(self.__use_tool(toolbox=tb, req=req, func=(func, params)))\
+                    .add_done_callback(self.__tool_task_cb)
                 
-                logging.info(f"Connected to broker as: {client_id}")
-                try:
-                    await self.__broker_message_handler()
-                except Exception as e:
-                    logging.exception(e)
-            except MqttError as e:
-                logging.exception(e)
-                time.sleep(3)
-    
+                asyncio.create_task(self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.ACCEPTED, success=True, output="Run request accepted")))
+            except CouldNotParseToolRequestException as e:
+                logging.error(e)    
+            except ToolNotFoundException as e:
+                asyncio.create_task(self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.REJECTED, output=str(e))))
+        except *ToolValidationException as e:
+            if type(e) is ExceptionGroup:
+                for ex in e.exceptions:
+                    validation_errors.append(str(ex))  
+            else:
+                validation_errors.append(str(e))
+
+        if len(validation_errors) > 0:
+            return asyncio.create_task(self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.REJECTED, output=",".join(validation_errors))))
+
+    async def __run_broker(self, conn_str: BrokerConnectionString, server_host: str):    
+        if self.__broker is None:
+            client_id = "ToolboxRunner_" \
+                + md5(
+                    (
+                        "".join(self.__tool_boxes.keys()) \
+                            + __file__ \
+                            + server_host[0] \
+                            + str(server_host[1])
+                    ).encode("utf-8")
+                ).hexdigest()
+                
+            self.__broker = MessagingBroker(conn_str, client_id=client_id)
+            
+        if not self.__broker.connected:
+            await self.__broker.connect()
+                    
+            self.__broker.on_message_cb = self.__broker_message_handler
+            await self.__broker_subscribe_tools()
+                
     #endregion Broker stuff
 
     #region Http server
@@ -276,7 +222,7 @@ class HostToolboxes:
 
     #endregion Http server
 
-    async def serve(self, at: tuple[str, int]=("127.0.0.1", 80), messaging_broker: BrokerParams | None = None) -> None:
+    async def serve(self, messaging_broker: BrokerConnectionString, at: tuple[str, int]=("127.0.0.1", 80)) -> None:
         """
         Runs the api server for selected toolboxes.
         
@@ -286,13 +232,8 @@ class HostToolboxes:
         :type messaging_broker: str | None
         """
 
-        self.__server_tasks = []
-        
-        if messaging_broker:
-            self.__server_tasks.append(asyncio.create_task(self.__run_broker(messaging_broker, at)))
-
+        self.__server_tasks = [ asyncio.create_task(self.__run_broker(messaging_broker, at)) ]
         self.__add_main_routes()
-
         self.__server_tasks.append(asyncio.create_task(self.__start_fastapi(at)))
         
         await asyncio.gather(*self.__server_tasks)
