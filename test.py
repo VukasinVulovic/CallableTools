@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import tools.MathWiz, tools.TheadWaste
 
 load_dotenv(".env")
-load_dotenv(".env.local")
+load_dotenv(".env.local", override=True)
 
 VERSION="21_12_2025-dev-1234-testing"
 TOOLBOX_NAME = "TestingToolbox"

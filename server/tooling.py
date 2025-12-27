@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from server import schema
 from server.decorators import generate_method_schema
-from server.exceptions import *
+from server.common.exceptions import *
 import types as pyTypes
 import inspect
 

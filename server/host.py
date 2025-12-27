@@ -8,7 +8,8 @@ from urllib.parse import unquote
 
 from dataclasses_json import dataclass_json
 from fastapi.responses import JSONResponse
-from server.exceptions import CouldNotParseToolRequestException, ToolNotFoundException, ToolRuntimeException, ToolValidationException
+from server.common.exceptions import CouldNotParseToolRequestException, ToolNotFoundException, ToolRuntimeException, ToolValidationException
+from server.schema import Version
 from server.tooling import ToolBox
 import re
 import asyncio
@@ -21,7 +22,7 @@ from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR, HTTP_404_NOT_FOUND
 from dataclasses import dataclass
 from functools import cache
 
-from server.schema import RunToolRequest, ToolResponse, ToolStatus, Version
+from server.models import RunToolRequest, ToolResponse, ToolStatus
 from server.helpers.schema import SchemaSerializer
 
 
