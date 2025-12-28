@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import random
 
 from server.host import HostToolboxes, BrokerConnectionString
 from server.schema import Version
@@ -24,4 +23,4 @@ if __name__ == "__main__":
     
     i = HostToolboxes([tb], Version.parse(VERSION))
 
-    asyncio.run(i.serve(messaging_broker=BROKER_PARAMS, at=("127.0.0.1", 80)))
+    asyncio.run(i.serve(messaging_broker=BROKER_PARAMS, at=("127.0.0.1", 12)))

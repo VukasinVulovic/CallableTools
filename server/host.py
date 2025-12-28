@@ -124,19 +124,19 @@ class HostToolboxes:
         logging.info(f"Responding to tool request @ {topic}, {res.status.name}")
         
         payload = res.model_dump_json().encode("utf-8")
-        return asyncio.create_task(self.__broker.publish(topic=topic, payload=payload,qos=2,retain=True))
+        await self.__broker.publish(topic=topic, payload=payload,qos=2,retain=True)
 
     async def __broker_message_handler(self, topic: str, msg: bytes):
         logging.info(f"New Broker message @ {topic}")
         validation_errors = []
         
-        topic_split = topic.split("/")
+        topic_split = topic.split(".")
         
         try:
             try:
                 req = RunToolRequest.try_parse(msg.decode("utf-8"))
-                req.tool_box_name = topic_split[-3]
-                req.tool_name = ".".join(topic_split[-2:])
+                req.tool_box_name = topic_split[1]
+                req.tool_name = ".".join(topic_split[2:])
                 tb = self.__tool_boxes.get(req.tool_box_name, None)
                 
                 if tb is None:
@@ -148,11 +148,11 @@ class HostToolboxes:
                     .create_task(self.__use_tool(toolbox=tb, req=req, func=(func, params)))\
                     .add_done_callback(self.__tool_task_cb)
                 
-                asyncio.create_task(self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.ACCEPTED, success=True, output="Run request accepted")))
+                await self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.ACCEPTED, success=True, output="Run request accepted"))
             except CouldNotParseToolRequestException as e:
                 logging.error(e)    
             except ToolNotFoundException as e:
-                asyncio.create_task(self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.REJECTED, output=str(e))))
+                await self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.REJECTED, output=str(e)))
         except *ToolValidationException as e:
             if type(e) is ExceptionGroup:
                 for ex in e.exceptions:
@@ -161,7 +161,7 @@ class HostToolboxes:
                 validation_errors.append(str(e))
 
         if len(validation_errors) > 0:
-            return asyncio.create_task(self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.REJECTED, output=",".join(validation_errors))))
+            await self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.REJECTED, output=",".join(validation_errors)))
 
     async def __run_broker(self, conn_str: BrokerConnectionString, server_host: str):    
         if self.__broker is None:
