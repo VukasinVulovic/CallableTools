@@ -3,6 +3,7 @@ from hashlib import md5
 import json
 import logging
 from typing import Callable
+from uuid import uuid4
 
 from dataclasses_json import dataclass_json
 from fastapi.responses import JSONResponse
@@ -68,7 +69,7 @@ class EndPoints(Enum):
     ROOT = "/"
     OFFERS = "/offers"
     RUN_TOOL = "$share/execute"
-    TOOL_RESPONSES = "responses"
+    TOOL_RESPONSES = "$share/responses"
 
 class HostToolboxes:
     __version: Version
@@ -117,7 +118,6 @@ class HostToolboxes:
             for tool in tb.tools:
                 topic = f"{EndPoints.RUN_TOOL.value}/{name}/{tool}"
                 await self.__broker.subscribe(topic=topic, qos=2)
-                logging.info(f"Subscribed to {topic}")
 
     async def __broker_send_tool_response(self, res: ToolResponse):
         topic = f"{EndPoints.TOOL_RESPONSES.value}/{res.run_id}"
@@ -127,9 +127,9 @@ class HostToolboxes:
         await self.__broker.publish(topic=topic, payload=payload,qos=2,retain=True)
 
     async def __broker_message_handler(self, topic: str, msg: bytes):
-        logging.info(f"New Broker message @ {topic}")
         validation_errors = []
         
+        topic = topic.replace("$share.", "")
         topic_split = topic.split(".")
         
         try:
@@ -173,16 +173,14 @@ class HostToolboxes:
                             + server_host[0] \
                             + str(server_host[1])
                     ).encode("utf-8")
-                ).hexdigest()
+                ).hexdigest() + str(uuid4())
                 
             self.__broker = MessagingBroker(conn_str, client_id=client_id)
             
-        if not self.__broker.connected:
-            await self.__broker.connect()
-                    
-            self.__broker.on_message_cb = self.__broker_message_handler
-            await self.__broker_subscribe_tools()
-                
+        self.__broker.on_message_cb = self.__broker_message_handler
+        await self.__broker_subscribe_tools()
+        
+        await self.__broker.connect()
     #endregion Broker stuff
 
     #region Http server
