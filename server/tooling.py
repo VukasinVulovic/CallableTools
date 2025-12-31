@@ -19,11 +19,11 @@ tracemalloc.start()
 class ToolBox:
     __schema__: schema.ToolBox = None
     __tools: dict[str, callable]
-    _executor: ThreadPoolExecutor
+    __executor: ThreadPoolExecutor
 
     def __init__(self, name: str, description: str, modules: list[pyTypes.ModuleType], version: schema.Version = None):
         tool_groups = list[schema.ToolGroup]()
-        self._executor = ThreadPoolExecutor()
+        self.__executor = ThreadPoolExecutor()
         self.__tools = dict()
 
         for mod in modules:
@@ -80,7 +80,7 @@ class ToolBox:
             else:
                 # func is blocking -> run in thread pool
                 loop = asyncio.get_running_loop()
-                outputs = await loop.run_in_executor(self._executor, lambda: func[0](**func[1]))
+                outputs = await loop.run_in_executor(self.__executor, lambda: func[0](**func[1]))
         except Exception as e:
             raise ToolRuntimeException(str(e)) #no trace
         
@@ -89,3 +89,7 @@ class ToolBox:
     @property
     def tools(self):
         return self.__tools
+    
+    @property
+    def name(self):
+        return self.__schema__.name

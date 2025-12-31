@@ -2,7 +2,7 @@ from enum import Enum
 from hashlib import md5
 import json
 import logging
-from typing import Callable
+from typing import Any, AsyncGenerator, Callable
 from uuid import uuid4
 
 from dataclasses_json import dataclass_json
@@ -68,21 +68,21 @@ class _ErrorHandlingMiddleware(BaseHTTPMiddleware):
 class EndPoints(Enum):
     ROOT = "/"
     OFFERS = "/offers"
-    RUN_TOOL = "$share/execute"
-    TOOL_RESPONSES = "$share/responses"
+    RUN_TOOL = "execute"
+    TOOL_RESPONSES = "responses"
 
-class HostToolboxes:
+class HostToolbox:
     __version: Version
-    __tool_boxes: dict[str, ToolBox]
+    __tool_box: ToolBox
     __app: FastAPI
     __uvicorn_server: uvicorn.Server
     __server_tasks: list
     __broker: MessagingBroker = None
 
-    def __init__(self, tool_boxes: set[ToolBox], service_version: Version):
+    def __init__(self, tool_box: ToolBox, service_version: Version):
         self.__app = FastAPI()
         self.__broker = None
-        self.__tool_boxes = { box.__schema__.name: box for box in tool_boxes}
+        self.__tool_box = tool_box
         self.__version = service_version
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
@@ -93,9 +93,9 @@ class HostToolboxes:
         del self.__server_tasks
 
     #region tool stuff
-    async def __use_tool(self, toolbox: ToolBox, req: RunToolRequest, func=tuple[Callable, dict]) -> ToolResponse:        
+    async def __use_tool(self, req: RunToolRequest, func=tuple[Callable, dict]) -> ToolResponse:        
         try:
-            out = await toolbox.execute(func)
+            out = await self.__tool_box.execute(func)
         except ToolRuntimeException as e:
             return ToolResponse.build(req=req, status=ToolStatus.PROCESSED, output=str(e), success=False)
 
@@ -112,15 +112,18 @@ class HostToolboxes:
             asyncio.create_task(self.__broker_send_tool_response(task.result()))
     #endregion
 
+    async def __tools_names(self) -> AsyncGenerator:
+        for tool in self.__tool_box.tools:
+            yield tool
+
     #region Broker stuff
     async def __broker_subscribe_tools(self):
-        for name, tb in self.__tool_boxes.items():
-            for tool in tb.tools:
-                topic = f"{EndPoints.RUN_TOOL.value}/{name}/{tool}"
-                await self.__broker.subscribe(topic=topic, qos=2)
+        async for tool in self.__tools_names():
+            await self.__broker.subscribe(topic=f"{EndPoints.RUN_TOOL.value}/{self.__tool_box.name}/{tool}", qos=2)
+            await self.__broker.create_wild_queue(f"{EndPoints.TOOL_RESPONSES.value}/{self.__tool_box.name}/{tool}/+")
 
     async def __broker_send_tool_response(self, res: ToolResponse):
-        topic = f"{EndPoints.TOOL_RESPONSES.value}/{res.run_id}"
+        topic = f"{EndPoints.TOOL_RESPONSES.value}/{res.tool_box_name}/{res.tool_name}/{res.run_id}"
         logging.info(f"Responding to tool request @ {topic}, {res.status.name}")
         
         payload = res.model_dump_json().encode("utf-8")
@@ -134,18 +137,14 @@ class HostToolboxes:
         
         try:
             try:
-                req = RunToolRequest.try_parse(msg.decode("utf-8"))
-                req.tool_box_name = topic_split[1]
+                req = RunToolRequest.try_parse(msg)
+                req.tool_box_name = self.__tool_box.name
                 req.tool_name = ".".join(topic_split[2:])
-                tb = self.__tool_boxes.get(req.tool_box_name, None)
                 
-                if tb is None:
-                    raise ToolNotFoundException()
-                
-                (func, params) = tb.deserialize_request(req)
+                (func, params) = self.__tool_box.deserialize_request(req)
                 
                 asyncio \
-                    .create_task(self.__use_tool(toolbox=tb, req=req, func=(func, params)))\
+                    .create_task(self.__use_tool(req=req, func=(func, params)))\
                     .add_done_callback(self.__tool_task_cb)
                 
                 await self.__broker_send_tool_response(ToolResponse.build(req=req, status=ToolStatus.ACCEPTED, success=True, output="Run request accepted"))
@@ -165,13 +164,12 @@ class HostToolboxes:
 
     async def __run_broker(self, conn_str: BrokerConnectionString, server_host: str):    
         if self.__broker is None:
-            client_id = "ToolboxRunner_" \
+            client_id = f"{self.__tool_box.name}." \
                 + md5(
                     (
-                        "".join(self.__tool_boxes.keys()) \
-                            + __file__ \
-                            + server_host[0] \
-                            + str(server_host[1])
+                        __file__ \
+                        + server_host[0] \
+                        + str(server_host[1])
                     ).encode("utf-8")
                 ).hexdigest() + str(uuid4())
                 
@@ -210,7 +208,7 @@ class HostToolboxes:
     # TODO: Expand
     @cache
     def __offers_endpoint(self) -> dict:
-        return { "toolboxes": json.loads(SchemaSerializer.serialize(list(self.__tool_boxes.values()))) }
+        return self.__tool_box.__schema__
 
     def __add_main_routes(self):
         #offer of toolboxes
@@ -226,6 +224,8 @@ class HostToolboxes:
         
         :param at: listening location as touple of (host, port), defaults to ("127.0.0.1", 80)
         :type at: tuple[str, int]
+        :param know_as: identifier that will be used later for load-balancing (group of toolboxes)
+        :type know_as: str
         :param messaging_broker: Connection string of Messaging broker (MQTT or AMPQ) for async requests, if default left (None), the server will function via socket.io
         :type messaging_broker: str | None
         """
