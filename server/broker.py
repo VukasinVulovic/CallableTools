@@ -61,6 +61,7 @@ class _Subscription:
     topic: str
     qos: int
     pending: bool
+    is_brodcast: bool
     
     def __hash__(self):
         return hash(self.topic)
@@ -122,66 +123,79 @@ class MessagingBroker():
 
         return False
     
-    def __normalize_topic(self, topic: str):
-        return topic.replace(".", "/").replace("#", "+") if self.type == BrokerType.MQTT else topic.replace("/", ".").replace("+", "#").replace("$share.", "")
+    @staticmethod
+    def __normalize_topic(topic: str): #replace mqtt syntax to amqp to standardize
+        return \
+            topic \
+            .replace("/", ".") \
+            .replace("+", "#") \
+            .replace("$share.", "")
+    
+    def __convert_topic(self, topic: str):
+        if self.__conn_str.type == BrokerType.MQTT: #for mqtt, add share so other consumers can process messages, also convert to correct syntax for mqtt
+            return \
+                (f"$share/{topic}" if not topic.startswith("$share") else topic) \
+                .replace(".", "/") \
+                .replace("#", "+")
+        elif self.type in (BrokerType.AMQP, BrokerType.AMQPS): #for amqp, remove share, convet mqtt syntax to amqp
+            return \
+                topic \
+                .replace("/", ".") \
+                .replace("+", "#") \
+                .replace("$share.", "")
+    
+        return topic
     
     async def create_wild_queue(self, name: str) -> None:
         if self.type in (BrokerType.AMQP, BrokerType.AMQPS):
-            self.__queues.add(_Queue(self.__normalize_topic(name), True))
+            self.__queues.add(_Queue(self.__convert_topic(name), True))
             
         if self.is_connected:
             self.__process_pending()
-    
-    async def subscribe(self, topic: str, qos: int = 2) -> None:
-        sub = _Subscription(topic=self.__normalize_topic(topic), qos=qos, pending=True)
+        
+    async def subscribe(self, topic: str, qos: int = 2, is_brodcast: bool = False) -> None: #add to pending
+        sub = _Subscription(topic=self.__convert_topic(topic), qos=qos, pending=True, is_brodcast=is_brodcast)
 
         if sub in self.__subscriptons:
             return
 
         self.__subscriptons.add(sub)
-
-        try:
-            if self.is_connected:
-                await self.__process_pending()
-        except (MqttError, aio_pika.exceptions.AMQPError) as e:
-            raise BrokerException(e)
+        
+        if self.is_connected: #if connected to broker, apply subscription
+            await self.__process_pending()     
           
-    async def publish(self, topic: str, payload: bytes, retain: bool = True, qos:int=2) -> None:
-        if topic.startswith("$share."):
-            topic = topic.split("$share.")[1]
-            
+    async def publish(self, topic: str, payload: bytes, retain: bool=True, qos:int=2) -> None: #publish to topic
+        topic = self.__convert_topic(topic).replace("$share/", "")
+        
         try:
             if self.__conn_str.type == BrokerType.MQTT:
-                topic = topic.replace(".", "/")
                 await self.__mqtt.publish(topic=topic, qos=qos, retain=retain, payload=payload)
             elif self.type in (BrokerType.AMQP, BrokerType.AMQPS):
-                topic = topic.replace("/", ".")
                 msg = aio_pika.Message(payload, delivery_mode=aio_pika.DeliveryMode.PERSISTENT if qos > 1 else aio_pika.DeliveryMode.NOT_PERSISTENT)
                 await self.__amqp.exchange.publish(message=msg, routing_key=topic)
         except (MqttError, aio_pika.exceptions.AMQPError) as e:
             raise BrokerException(e)
     
-    def __pending_subs(self):
-        return (sub for sub in self.__subscriptons if sub.pending)
+    async def __process_pending(self): #process pending queue creations and subscriptions
+        try:
+            if self.type in (BrokerType.AMQP, BrokerType.AMQPS): #create pending queues for amqp
+                for queue in (q for q in self.__queues if q.pending):
+                    q = await self.__amqp.channel.declare_queue(queue.name, passive=False, exclusive=False, durable=True)
+                    await q.bind(exchange=self.__amqp.exchange, routing_key=queue.name)
+            
+            for sub in (sub for sub in self.__subscriptons if sub.pending):
+                if self.__conn_str.type == BrokerType.MQTT:
+                    await self.__mqtt.subscribe(topic=sub.topic, qos=sub.qos)
+                elif self.type in (BrokerType.AMQP, BrokerType.AMQPS): #for amqp, delcare queue, bind and then define consumer
+                    queue = await self.__amqp.channel.declare_queue(sub.topic, passive=False, exclusive=False, durable=True)
+                    await queue.bind(exchange=self.__amqp.exchange, routing_key=sub.topic)
+                    await queue.consume(self.__process_amqp_message)
+                    
+                sub.pending = False
+        except (MqttError, aio_pika.exceptions.AMQPError) as e:
+            raise BrokerException(e)   
     
-    def __pending_queues(self):
-        return (q for q in self.__queues if q.pending)
-    
-    async def __process_pending(self):
-        for queue in self.__pending_queues():
-                q = await self.__amqp.channel.declare_queue(queue.name, passive=False, exclusive=False, durable=True)
-                await q.bind(exchange=self.__amqp.exchange, routing_key=queue.name)
-        
-        for sub in self.__pending_subs():
-            if self.__conn_str.type == BrokerType.MQTT:
-                await self.__mqtt.subscribe(topic=f"$share/{sub.topic}" if not sub.topic.startswith("$share") else sub.topic, qos=sub.qos)
-            elif self.type in (BrokerType.AMQP, BrokerType.AMQPS):
-                queue = await self.__amqp.channel.declare_queue(sub.topic, passive=False, exclusive=False, durable=True)
-                await queue.bind(exchange=self.__amqp.exchange, routing_key=sub.topic)
-                await queue.consume(self.__process_amqp_message)
-            sub.pending = False
-    
-    async def __mqtt_connect_loop(self):
+    async def __mqtt_connect_loop(self): #auto-reconnect for mqtt
         while True:
             try:                 
                 if not self.is_connected:
@@ -207,17 +221,17 @@ class MessagingBroker():
             
             await asyncio.sleep(3)
 
-    async def __mqtt_message_loop(self):
+    async def __mqtt_message_loop(self): #loop to process mqtt messages
         if self.type == BrokerType.MQTT:
             if self.__on_message_cb is None or not self.is_connected:
                 return
                         
             async with self.__mqtt.messages() as queue:
                 async for msg in queue:
-                    topic = str(msg.topic).replace("/", ".")
+                    topic = self.__normalize_topic(str(msg.topic))
                     asyncio.create_task(self.__on_message_cb(topic, msg.payload))
 
-    async def __process_amqp_message(self, message: aio_pika.abc.AbstractIncomingMessage) -> None:
+    async def __process_amqp_message(self, message: aio_pika.abc.AbstractIncomingMessage) -> None: #internal callback to process amqp message
         async with message.process():
             if self.__on_message_cb and self.is_connected:            
                 asyncio.create_task(self.__on_message_cb(message.routing_key, message.body))
@@ -227,14 +241,14 @@ class MessagingBroker():
     def on_message_cb(self):
         raise AttributeError("write-only")
 
-    @on_message_cb.setter
+    @on_message_cb.setter #callback that will be called when message is received
     def on_message_cb(self, cb: Callable[[str, bytes], Awaitable[None]]) -> None:
         self.__on_message_cb = cb
         
         if self.type == BrokerType.MQTT:
             self.__msg_task = asyncio.create_task(self.__mqtt_message_loop())
 
-    async def connect(self) -> None:
+    async def connect(self) -> None: #connect to broker, for mqtt use connection loop
         async with self.__connection_lock:
             if self.type == BrokerType.MQTT:
                 if self.is_connected:
@@ -270,7 +284,7 @@ class MessagingBroker():
                 
                 await self.__process_pending()
                            
-    async def disconnect(self) -> None:
+    async def disconnect(self) -> None: #cancel all tasks and disconnect
         async with self.__connection_lock:
             if not self.is_connected:
                 return
