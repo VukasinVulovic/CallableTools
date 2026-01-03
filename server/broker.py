@@ -11,14 +11,6 @@ import aio_pika
 from aiomqtt import Client as MQTTClient, MqttError
 from uuid import uuid4
 
-QUEUE_NAME = ""
-
-QUEUE_ARGS = dict(
-    durable=True,
-    exclusive=False,
-    auto_delete=False,
-)
-
 if sys.platform.startswith("win"): #Windows bs :D
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -230,7 +222,7 @@ class MessagingBroker():
                 async for msg in queue:
                     topic = self.__normalize_topic(str(msg.topic))
                     asyncio.create_task(self.__on_message_cb(topic, msg.payload))
-
+ 
     async def __process_amqp_message(self, message: aio_pika.abc.AbstractIncomingMessage) -> None: #internal callback to process amqp message
         async with message.process():
             if self.__on_message_cb and self.is_connected:            

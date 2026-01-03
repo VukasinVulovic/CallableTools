@@ -7,7 +7,6 @@ from server.common.exceptions import CouldNotParseToolRequestException, ToolNotF
 from server.schema import Version
 from server.tooling import ToolBox
 import asyncio
-import uvicorn
 from fastapi import FastAPI
 from functools import cache
 from server.models import RunToolRequest, ToolResponse, ToolStatus
@@ -20,8 +19,6 @@ class EndPoints(Enum):
 class HostToolbox:
     __version: Version
     __tool_box: ToolBox
-    __app: FastAPI
-    __uvicorn_server: uvicorn.Server
     __server_tasks: list = []
     __broker: MessagingBroker = None
     __logger: logging.Logger
