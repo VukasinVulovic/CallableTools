@@ -1,11 +1,8 @@
 from abc import abstractmethod
 import asyncio
 from dataclasses import dataclass
-from enum import Enum
 import logging
-import re
 import sys
-from urllib.parse import unquote
 from typing import Awaitable, Callable 
 import aio_pika
 from aiomqtt import Client as MQTTClient, MqttError
@@ -13,40 +10,6 @@ from uuid import uuid4
 
 if sys.platform.startswith("win"): #Windows bs :D
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-class BrokerType(Enum):
-    MQTT = "mqtt"
-    AMQP = "amqp"
-    AMQPS = "amqps"
-
-@dataclass
-class BrokerConnectionString:
-    host: str
-    port: int
-    type: BrokerType
-    username: str | None
-    password: str | None
-
-    def __init__(self, conn_str: str):
-        m = re \
-            .compile(
-                r'^(?P<scheme>mqtt|amqp[s]?)://'
-                r'(?:(?P<user>[^:/@]+)(?::(?P<password>[^@/]+))?@)?'
-                r'(?P<host>[^:/]+)'
-                r'(?::(?P<port>\d+))?'
-                r'(?:/(?P<path>[^/]+))?$'
-            ) \
-            .match(conn_str) \
-            .groupdict() \
-            .items()
-        
-        parsed = { k: unquote(v) if v else None for k, v in m }
-
-        self.type = BrokerType(parsed.get("scheme"))
-        self.host = parsed.get("host")
-        self.port = int(parsed.get("port", 1883))
-        self.username = parsed.get("user")
-        self.password = parsed.get("password")
 
 @dataclass(eq=True, frozen=False)
 class _Subscription:
@@ -75,7 +38,7 @@ class _AMQP:
     exchange: aio_pika.abc.AbstractRobustExchange
     channel: aio_pika.abc.AbstractRobustChannel
 
-class MessagingBroker():
+class BrokerHandler():
     __mqtt: MQTTClient = None
     __mqtt_connected = False
     __on_message_cb: Callable[[str, bytes], Awaitable[None]] | None = None

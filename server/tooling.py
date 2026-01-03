@@ -1,6 +1,8 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from logging import Logger
+import logging
+from typing import Any, AsyncGenerator, Callable, Coroutine
 from server import schema
 from server.decorators import generate_method_schema
 from server.common.exceptions import *
@@ -11,7 +13,7 @@ from server.helpers.schema import SchemaParser
 
 import tracemalloc
 
-from server.models import RunToolRequest
+from server.models import RunToolRequest, ToolResponse, ToolStatus
 tracemalloc.start()
 
 #TODO: add validate_tool
@@ -20,8 +22,11 @@ class ToolBox:
     __schema__: schema.ToolBox = None
     __tools: dict[str, callable]
     __executor: ThreadPoolExecutor
+    __logger: Logger
 
     def __init__(self, name: str, description: str, modules: list[pyTypes.ModuleType], version: schema.Version = None):
+        self.__logger = logging.getLogger(f"TB-{name}")
+        
         tool_groups = list[schema.ToolGroup]()
         self.__executor = ThreadPoolExecutor()
         self.__tools = dict()
@@ -63,28 +68,65 @@ class ToolBox:
             tool_groups=[str(t) for t in tool_groups]
         )
 
-    def deserialize_request(self, req: RunToolRequest) -> tuple[Callable, dict]:
-        func = self.__tools.get(req.tool_name or "\\")
-
-        if func is None:
-            raise ToolNotFoundException()
-                
-        return (func, SchemaParser.try_parse_params(func.__schema__, req.parameters))
-
-    # @cache
-    async def execute(self, func=tuple[Callable, dict]) -> Any:
+    async def __execute_func(self, func: Callable | Coroutine, params: dict = {}) -> Any:
         try:
-            if asyncio.iscoroutinefunction(func[0]):
+            if asyncio.iscoroutinefunction(func):
                 # func is async
-                outputs = await func(**func[1])
+                outputs = await func(**params)
             else:
                 # func is blocking -> run in thread pool
                 loop = asyncio.get_running_loop()
-                outputs = await loop.run_in_executor(self.__executor, lambda: func[0](**func[1]))
+                outputs = await loop.run_in_executor(self.__executor, lambda: func(**params))
         except Exception as e:
-            raise ToolRuntimeException(str(e)) #no trace
+            self.__logger.exception(e)
+            raise ToolRuntimeException("Internal server error") #no trace
         
         return outputs
+    
+    async def handle_raw_request(self, tool: str, raw_request: bytes) -> AsyncGenerator[ToolResponse]:
+        self.__logger.info(f"NEW Request for {tool}")
+        
+        validation_errors = []
+        
+        try:
+            try:
+                req = RunToolRequest.try_parse(raw_request)
+                req.tool_box_name = self.name
+                req.tool_name = tool
+                    
+                #TODO: serialize complex types                
+                func = self.__tools.get(req.tool_name or "\\")
+
+                if func is None:
+                    yield ToolNotFoundException()
+                
+                params =  SchemaParser.try_parse_params(func.__schema__, req.parameters)
+                
+                yield ToolResponse.build(req=req, status=ToolStatus.ACCEPTED, output="Accepted", success=True)
+                self.__logger.info(f"Request for {tool} ACCEPTED")
+                                            
+                out = await self.__execute_func(func, params)
+                
+                yield ToolResponse.build(req=req, status=ToolStatus.PROCESSED, output=str(out), success=True)
+                self.__logger.info(f"Request for {tool} PROCESSED")
+            except CouldNotParseToolRequestException as e:
+                self.__logger.exception(e)
+            except ToolNotFoundException as e:
+                yield ToolResponse.build(req=req, status=ToolStatus.REJECTED, output=str(e))
+                self.__logger.info(f"Request for {tool} REJECTED")
+            except ToolRuntimeException as e:
+                yield ToolResponse.build(req=req, status=ToolStatus.PROCESSED, output=str(e), success=False)
+                self.__logger.info(f"Request for {tool} PROCESSED, EXCEPTION AT RUNTIME")
+        except *ToolValidationException as e:
+            if type(e) is ExceptionGroup:
+                for ex in e.exceptions:
+                    validation_errors.append(str(ex))  
+            else:
+                validation_errors.append(str(e))
+
+        if len(validation_errors) > 0:
+            yield ToolResponse.build(req=req, status=ToolStatus.REJECTED, output=",".join(validation_errors))
+            self.__logger.info(f"Request for {tool} REJECTED")
     
     @property
     def tools(self):

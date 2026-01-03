@@ -1,3 +1,6 @@
+class ToolboxInterfaceException(Exception):
+    pass
+
 class MissingDescriptionException(Exception):
     def __init__(self):
         super().__init__("Description is missing")
