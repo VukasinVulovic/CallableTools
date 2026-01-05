@@ -1,8 +1,8 @@
 import inspect
 from server import schema
 from typing import Callable, Any, TypeVar, Union
-from server.helpers.schema import gen_type_schema
-from server.common.exceptions import MissingVersionException, MissingDescriptionException
+from common.helpers.schema import gen_type_schema
+from common.exceptions import MissingDescriptionException
 
 DECORATABLE_TYPE = TypeVar("T", bound=Union[type, Callable[..., Any]])
 

@@ -7,7 +7,7 @@ from server.schema import Version
 from server.tooling import ToolBox
 from dotenv import load_dotenv
 import tools.MathWiz, tools.TheadWaste
-from server.helpers.connStringParser import BrokerConnectionString
+from common.helpers.connStringParser import BrokerConnectionString
 
 load_dotenv(".env")
 load_dotenv(".env.local", override=True)

@@ -1,7 +1,7 @@
 from enum import Enum
 import json
 from typing import get_type_hints
-from server.common.exceptions import MissingRequiredToolParamsException, ObjectNotSerializable, TooManyParamsException, WrongParamTypeException
+from common.exceptions import MissingRequiredToolParamsException, ObjectNotSerializable, TooManyParamsException, WrongParamTypeException
 from server.schema import Tool
 
 BASIC_TYPES_STR = {

@@ -5,15 +5,15 @@ import logging
 from typing import Any, AsyncGenerator, Callable, Coroutine
 from server import schema
 from server.decorators import generate_method_schema
-from server.common.exceptions import *
+from common.exceptions import *
 import types as pyTypes
 import inspect
 
-from server.helpers.schema import SchemaParser
+from common.helpers.schema import SchemaParser
 
 import tracemalloc
 
-from server.models import RunToolRequest, ToolResponse, ToolStatus
+from common.models import RunToolRequest, ToolResponse, ToolStatus
 tracemalloc.start()
 
 #TODO: add validate_tool

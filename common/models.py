@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pydantic import BaseModel
-from server.common.exceptions import CouldNotParseToolRequestException
+from common.exceptions import CouldNotParseToolRequestException
 from enum import Enum
 from typing import Optional
 import uuid

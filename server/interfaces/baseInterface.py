@@ -2,7 +2,7 @@ import abc
 from contextlib import contextmanager
 from typing import Awaitable, Callable
 
-from server.models import RunToolRequest, ToolResponse
+from common.models import RunToolRequest, ToolResponse
 from ..tooling import ToolBox
 
 class ToolboxInterface(metaclass=abc.ABCMeta):
