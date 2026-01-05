@@ -7,5 +7,6 @@ requires-python = ">=3.12"
 dependencies = [
     "aio-pika>=9.5.8",
     "aiomqtt>=2.5.0",
+    "dotenv>=0.9.9",
     "pydantic>=2.12.5",
 ]

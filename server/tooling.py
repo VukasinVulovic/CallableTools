@@ -82,7 +82,7 @@ class ToolBox:
         
         return outputs
     
-    async def handle_raw_request(self, tool: str, raw_request: str | bytes) -> AsyncGenerator[ToolResponse]:
+    async def handle_raw_request(self, tool: str, raw_request: str | bytes) -> AsyncGenerator[ToolResponse, None]:
         self.__logger.info(f"NEW Request for {tool}")
         
         validation_errors = []

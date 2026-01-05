@@ -54,6 +54,7 @@ class MQTTInterface(ToolboxInterface):
     __connection_lock = asyncio.Lock()
     __subscriptions = set[_MQTTSubscription]()
     __logger: logging.Logger
+    __conn_str: BrokerConnectionString
     
     def __init__(self, tb: ToolBox, conn_str: BrokerConnectionString):
         self._tool_box = tb
@@ -62,15 +63,8 @@ class MQTTInterface(ToolboxInterface):
         if conn_str.type is not BrokerType.MQTT:
             raise BrokerException("Supplied connection string is of type MQTT!")
          
-        self.__mqtt = MQTTClient(
-            conn_str.host, 
-            conn_str.port, 
-            clean_session=False,
-            client_id=f"{tb.name}-{md5(__file__.encode()).digest().hex()}", 
-            password=conn_str.password, 
-            username=conn_str.username
-        )
-         
+        self.__conn_str = conn_str
+        
     @property
     def get_toolbox(self) -> ToolBox: self._tool_box
          
@@ -86,7 +80,7 @@ class MQTTInterface(ToolboxInterface):
     
     async def close(self) -> None:
         if self.__is_connected:
-            self.__mqtt.disconnect()
+            await self.__mqtt.__aexit__(None, None, None)
             
         if self.__connect_task:
             self.__connect_task.cancel()
@@ -149,10 +143,8 @@ class MQTTInterface(ToolboxInterface):
         if not self.__is_connected:
             return
                     
-        async with self.__mqtt.messages() as queue:
-            async for msg in queue:
-                #asyncio.create_task(self.__handle_message(str(msg.topic), msg.payload.decode()))
-                await self.__handle_message(str(msg.topic), msg.payload.decode())
+        async for msg in self.__mqtt.messages:
+            await self.__handle_message(str(msg.topic), msg.payload.decode())
     
     async def __subscribe(self): #process pending queue creations and subscriptions
         try:
@@ -174,7 +166,16 @@ class MQTTInterface(ToolboxInterface):
         while True:
             try:                 
                 if not self.__is_connected:
-                    await self.__mqtt.connect()
+                    self.__mqtt = MQTTClient(
+                        self.__conn_str.host, 
+                        self.__conn_str.port, 
+                        clean_session=False,
+                        identifier=f"{self._tool_box.name}-{md5(__file__.encode()).digest().hex()}", 
+                        password=self.__conn_str.password, 
+                        username=self.__conn_str.username
+                    )
+                    
+                    await self.__mqtt.__aenter__()
                     self.__is_connected = True
                     
                     await self.__subscribe()
@@ -303,7 +304,7 @@ class AMQPInterface(ToolboxInterface):
             execute_schema=f"{_AMQPExchanges.EXECUTE.value}/{{tool_box_name}}/{{callable_path}}",
             response_schema="{reply to}",
             tool_box_schema=json.loads(str(self._tool_box.__schema__)),
-            interface="mqtt"
+            interface="amqp"
         ).model_dump_json().encode()
     
     async def __handle_message(self, msg: aio_pika.abc.AbstractIncomingMessage):
