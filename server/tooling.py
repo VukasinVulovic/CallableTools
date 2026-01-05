@@ -83,14 +83,14 @@ class ToolBox:
         
         return outputs
     
-    async def handle_raw_request(self, tool: str, raw_request: bytes) -> AsyncGenerator[ToolResponse]:
+    async def handle_raw_request(self, tool: str, raw_request: str | bytes) -> AsyncGenerator[ToolResponse]:
         self.__logger.info(f"NEW Request for {tool}")
         
         validation_errors = []
         
         try:
             try:
-                req = RunToolRequest.try_parse(raw_request)
+                req = RunToolRequest.try_parse(raw_request if type(raw_request) is str else raw_request.decode())
                 req.tool_box_name = self.name
                 req.tool_name = tool
                     
