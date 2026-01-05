@@ -2,11 +2,12 @@ import asyncio
 import logging
 import os
 
-from server.interfaces.MessagingBroker import MQTTInterface, AMQPInterface
+from server.interfaces.MessagingBroker import AMQPInterface
 from server.schema import Version
 from server.tooling import ToolBox
 from dotenv import load_dotenv
-import tools.MathWiz, tools.TheadWaste
+import tools.MathWiz
+import tools.TheadWaste
 from common.helpers.connStringParser import BrokerConnectionString
 
 load_dotenv(".env")
@@ -17,11 +18,29 @@ TOOLBOX_NAME = "TestingToolbox"
 
 logging.basicConfig(level=logging.INFO)
 
+from server import decorators
+
+
+@decorators.version("21_12_2025-dev-1234-testing")
+class MathWiz:
+    """
+    Mathematical functions for Arithmetics and other math things
+    """
+
+    @decorators.generate_method_schema
+    @staticmethod
+    def multiply(a: int, b: int) -> int:
+        """
+        Multiplies two numbers together.
+        """
+
+        return a * b
+
 async def main():
     ev = asyncio.Event()    
-    tb = ToolBox(TOOLBOX_NAME, "This toolbox is used for testing", [tools.MathWiz, tools.TheadWaste], Version.parse(VERSION))
+    tb = ToolBox(TOOLBOX_NAME, "This toolbox is used for testing", [], Version.parse(VERSION))
     
-    async with AMQPInterface(tb, BrokerConnectionString(conn_str=os.getenv("BROKER"))) as iface:
+    async with AMQPInterface(tb, BrokerConnectionString(conn_str=os.getenv("BROKER"))):
         await ev.wait()
         
     # async with MQTTInterface(tb, BrokerConnectionString(conn_str=os.getenv("BROKER"))) as iface:

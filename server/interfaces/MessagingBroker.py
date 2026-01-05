@@ -1,18 +1,19 @@
 import asyncio
+import json
+import logging
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from functools import cache
 from hashlib import md5
-import json
-import logging
-import sys
-import aio_pika
-from aiomqtt import Client as MQTTClient, MqttError
 
-from common.exceptions import CouldNotParseToolRequestException, ToolNotFoundException, ToolValidationException
+import aio_pika
+from aiomqtt import Client as MQTTClient
+from aiomqtt import MqttError
+
 from common.helpers.connStringParser import BrokerConnectionString, BrokerType
-from server.interfaces.baseInterface import ToolboxInterface
-from common.models import DiscoveryRequest, DiscoveryResponse, RunToolRequest, ToolResponse, ToolStatus
+from common.models import DiscoveryRequest, DiscoveryResponse, ToolResponse
+from server.interfaces.BaseInterface import ToolboxInterface
 from server.tooling import ToolBox
 
 if sys.platform.startswith("win"): #Windows bs :D
@@ -166,7 +167,7 @@ class MQTTInterface(ToolboxInterface):
                 
         except (MqttError, aio_pika.exceptions.AMQPError) as e:
             raise BrokerException(e)
-        except Exception as e:
+        except Exception:
             pass
     
     async def __connect_loop(self): #auto-reconnect for mqtt
@@ -300,7 +301,7 @@ class AMQPInterface(ToolboxInterface):
     def __generate_introspection(self) -> str:
         return DiscoveryResponse(
             execute_schema=f"{_AMQPExchanges.EXECUTE.value}/{{tool_box_name}}/{{callable_path}}",
-            response_schema=f"{{reply to}}",
+            response_schema="{reply to}",
             tool_box_schema=json.loads(str(self._tool_box.__schema__)),
             interface="mqtt"
         ).model_dump_json().encode()
@@ -352,5 +353,5 @@ class AMQPInterface(ToolboxInterface):
                 
         except (aio_pika.exceptions.AMQPError) as e:
             raise BrokerException(e)
-        except Exception as e:
+        except Exception:
             pass

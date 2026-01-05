@@ -1,8 +1,8 @@
-from enum import Enum
 import json
 from typing import get_type_hints
 from common.exceptions import MissingRequiredToolParamsException, ObjectNotSerializable, TooManyParamsException, WrongParamTypeException
 from server.schema import Tool
+from typing import Any
 
 BASIC_TYPES_STR = {
     str: "string",
@@ -57,9 +57,6 @@ def gen_type_schema(obj):
     
     # fallback
     return "string"
-
-from functools import cache
-from typing import Any
 
 class SchemaParser:
     @staticmethod

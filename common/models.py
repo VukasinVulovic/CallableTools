@@ -6,7 +6,6 @@ from enum import Enum
 from typing import Optional
 import uuid
 
-from server.schema import ToolBox
 
 class RunToolRequest(BaseModel):
     tool_box_name: Optional[str] = None
