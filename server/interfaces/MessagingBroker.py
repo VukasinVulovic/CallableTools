@@ -28,13 +28,21 @@ class _MQTTTopics(Enum):
     
 
 @dataclass(eq=True, frozen=False)
-class _Subscription:
+class _MQTTSubscription:
     topic: str
     qos: int
     pending: bool
     
     def __hash__(self):
         return hash(self.topic)
+    
+@dataclass(eq=True, frozen=False)
+class _AMQPSubscription:
+    routing_key: str
+    pending: bool
+    
+    def __hash__(self):
+        return hash(self.routing_key)
 
 class MQTTInterface(ToolboxInterface):
     _tool_box: ToolBox
@@ -43,7 +51,7 @@ class MQTTInterface(ToolboxInterface):
     __connect_task: asyncio.Task = None
     __msg_task:  asyncio.Task = None
     __connection_lock = asyncio.Lock()
-    __subscriptions = set[_Subscription]()
+    __subscriptions = set[_MQTTSubscription]()
     __logger: logging.Logger
     
     def __init__(self, tb: ToolBox, conn_str: BrokerConnectionString):
@@ -145,12 +153,10 @@ class MQTTInterface(ToolboxInterface):
                 #asyncio.create_task(self.__handle_message(str(msg.topic), msg.payload.decode()))
                 await self.__handle_message(str(msg.topic), msg.payload.decode())
     
-    
-    
     async def __subscribe(self): #process pending queue creations and subscriptions
         try:
             for tool in self._tool_box.tools:
-                sub = _Subscription(topic=f"{_MQTTTopics.EXECUTE.value}/{self._tool_box.name}/{tool}", pending=True, qos=2)
+                sub = _MQTTSubscription(topic=f"{_MQTTTopics.EXECUTE.value}/{self._tool_box.name}/{tool}", pending=True, qos=2)
                 self.__subscriptions.add(sub)
                 
                 await self.__mqtt.subscribe(topic=sub.topic, qos=sub.qos)
@@ -188,3 +194,163 @@ class MQTTInterface(ToolboxInterface):
                 raise
             
             await asyncio.sleep(3)
+      
+class _AMQPExchanges(Enum):
+    DISCOVERY = "discover"
+    EXECUTE = "execute"      
+          
+@dataclass 
+class _AMQP:
+    conn: aio_pika.abc.AbstractRobustConnection
+    channel: aio_pika.abc.AbstractRobustChannel
+    execute_exchange: aio_pika.abc.AbstractRobustExchange
+    discovery_exchange: aio_pika.abc.AbstractRobustExchange
+ 
+class AMQPInterface(ToolboxInterface):
+    _tool_box: ToolBox
+    __amqp: _AMQP = None
+    __connection_lock = asyncio.Lock()
+    __subscriptions = set[_MQTTSubscription]()
+    __logger: logging.Logger
+    __conn_str: BrokerConnectionString
+    
+    def __init__(self, tb: ToolBox, conn_str: BrokerConnectionString):
+        self.__conn_str = conn_str
+        self._tool_box = tb
+        self.__logger = logging.getLogger(tb.name)
+        
+        if conn_str.type not in (BrokerType.AMQP, BrokerType.AMQPS):
+            raise BrokerException("Supplied connection string is of type AMQP/AMQPS!")
+         
+    @property
+    def get_toolbox(self) -> ToolBox: self._tool_box
+         
+    async def open(self) -> None:
+        async with self.__connection_lock:
+            if self.__amqp and not self.__amqp.conn.is_closed:
+                return
+            
+            conn = await aio_pika.connect_robust(
+                host=self.__conn_str.host, 
+                port=self.__conn_str.port, 
+                login=self.__conn_str.username, 
+                password=self.__conn_str.password, 
+                ssl=self.__conn_str.type == BrokerType.AMQPS
+            )
+                                            
+            channel = await conn.channel()
+            
+            execute_exc = await channel.declare_exchange(
+                name=_AMQPExchanges.EXECUTE.value, 
+                type=aio_pika.ExchangeType.TOPIC, 
+                durable=True, 
+                passive=False
+            )
+            
+            discover_exc = await channel.declare_exchange(
+                name=_AMQPExchanges.DISCOVERY.value, 
+                type=aio_pika.ExchangeType.FANOUT, 
+                durable=False, 
+                passive=False
+            )
+            
+            self.__amqp = _AMQP(
+                conn=conn,
+                channel=channel,
+                discovery_exchange=discover_exc,
+                execute_exchange=execute_exc
+            )
+            
+            await self.__subscribe()
+    
+    async def close(self) -> None:
+        if self.__amqp and not self.__amqp.conn.is_closed:
+            self.__amqp.channel.close()
+            self.__amqp.conn.close()
+            
+    async def __aenter__(self):
+        await self.open()
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
+        return False
+    
+    async def __respond_to_execute(self, msg: aio_pika.abc.AbstractIncomingMessage) -> None:        
+        if not self.__amqp or self.__amqp.conn.is_closed:
+            return
+                
+        try:
+            #parse from topic and message
+            _, *tool = msg.routing_key[len(_AMQPExchanges.EXECUTE.value)+1:].split(".")
+            
+            async for res in self._tool_box.handle_raw_request(tool=".".join(tool), raw_request=msg.body):
+                await self.__amqp.channel.default_exchange.publish(
+                    aio_pika.Message(
+                        body=res.model_dump_json().encode(),
+                        correlation_id=msg.correlation_id,
+                    ),
+                    routing_key=msg.reply_to
+                )
+            
+        except Exception as e:
+            self.__logger.exception(e)
+    
+    @cache
+    def __generate_introspection(self) -> str:
+        return DiscoveryResponse(
+            execute_schema=f"{_AMQPExchanges.EXECUTE.value}/{{tool_box_name}}/{{callable_path}}",
+            response_schema=f"{{reply to}}",
+            tool_box_schema=json.loads(str(self._tool_box.__schema__)),
+            interface="mqtt"
+        ).model_dump_json().encode()
+    
+    async def __handle_message(self, msg: aio_pika.abc.AbstractIncomingMessage):
+        exc = msg.exchange if len(msg.exchange) > 0 else msg.routing_key.split(".")[0]
+        
+        self.__logger.info(f"NEW Message at {exc}")
+        
+        async with msg.process():
+            if not msg.reply_to:   # not an RPC message
+                return
+        
+            try:
+            
+                match exc:
+                    case _AMQPExchanges.DISCOVERY.value:
+                        await self.__amqp.channel.default_exchange.publish(
+                            aio_pika.Message(
+                                body=self.__generate_introspection(),
+                                correlation_id=msg.correlation_id,
+                            ),
+                            routing_key=msg.reply_to
+                        )
+                        
+                    case _AMQPExchanges.EXECUTE.value:
+                        await self.__respond_to_execute(msg)
+            
+            except (TypeError, AttributeError, ValueError) as e:
+                self.__logger.warning(f"User request invalid: {e}")
+            except Exception as e:
+                self.__logger.exception(e)
+    
+    async def __subscribe(self): #process pending queue creations and subscriptions
+        try:
+            for tool in self._tool_box.tools:
+                sub = _AMQPSubscription(routing_key=f"{_AMQPExchanges.EXECUTE.value}.{self._tool_box.name}.{tool}", pending=True)
+                self.__subscriptions.add(sub)
+                
+                q = await self.__amqp.channel.declare_queue(name=sub.routing_key, passive=False, durable=True)
+                await q.bind(self.__amqp.execute_exchange, routing_key=sub.routing_key, robust=True)
+                await q.consume(self.__handle_message)
+                
+                sub.pending = False
+            
+            dq = await self.__amqp.channel.declare_queue(name=_AMQPExchanges.DISCOVERY.value, passive=False, durable=False)
+            await dq.bind(self.__amqp.discovery_exchange, routing_key=f"{_AMQPExchanges.DISCOVERY.value}#")
+            await dq.consume(self.__handle_message, no_ack=False)
+                
+        except (aio_pika.exceptions.AMQPError) as e:
+            raise BrokerException(e)
+        except Exception as e:
+            pass

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 
-from server.interfaces.MessagingBroker import MQTTInterface
+from server.interfaces.MessagingBroker import MQTTInterface, AMQPInterface
 from server.schema import Version
 from server.tooling import ToolBox
 from dotenv import load_dotenv
@@ -21,8 +21,11 @@ async def main():
     ev = asyncio.Event()    
     tb = ToolBox(TOOLBOX_NAME, "This toolbox is used for testing", [tools.MathWiz, tools.TheadWaste], Version.parse(VERSION))
     
-    async with MQTTInterface(tb, BrokerConnectionString(conn_str=os.getenv("BROKER"))) as iface:
+    async with AMQPInterface(tb, BrokerConnectionString(conn_str=os.getenv("BROKER"))) as iface:
         await ev.wait()
+        
+    # async with MQTTInterface(tb, BrokerConnectionString(conn_str=os.getenv("BROKER"))) as iface:
+    #     await ev.wait()
     
     
     # stream = tb.handle_raw_request("MathWiz.multiply", """
