@@ -1,7 +1,7 @@
 import json
 from typing import get_type_hints
 from common.exceptions import MissingRequiredToolParamsException, ObjectNotSerializable, TooManyParamsException, WrongParamTypeException
-from server.schema import Tool
+from common.schema import Tool
 from typing import Any
 
 BASIC_TYPES_STR = {

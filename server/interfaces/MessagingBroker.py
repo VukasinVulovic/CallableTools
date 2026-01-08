@@ -3,7 +3,6 @@ import json
 import logging
 import sys
 from dataclasses import dataclass
-from enum import Enum
 from functools import cache
 from hashlib import md5
 
@@ -13,6 +12,7 @@ from aiomqtt import MqttError
 
 from common.helpers.connStringParser import BrokerConnectionString, BrokerType
 from common.models import DiscoveryRequest, DiscoveryResponse, ToolResponse
+from common.routes import _AMQPExchanges, _MQTTTopics
 from server.interfaces.BaseInterface import ToolboxInterface
 from server.tooling import ToolBox
 
@@ -21,12 +21,6 @@ if sys.platform.startswith("win"): #Windows bs :D
 
 class BrokerException(Exception):
     pass
-
-class _MQTTTopics(Enum):
-    DISCOVERY = "$share/discover"
-    EXECUTE = "$share/execute"
-    RESPONSE = "response"
-    
 
 @dataclass(eq=True, frozen=False)
 class _MQTTSubscription:
@@ -196,11 +190,7 @@ class MQTTInterface(ToolboxInterface):
                 raise
             
             await asyncio.sleep(3)
-      
-class _AMQPExchanges(Enum):
-    DISCOVERY = "discover"
-    EXECUTE = "execute"      
-          
+            
 @dataclass 
 class _AMQP:
     conn: aio_pika.abc.AbstractRobustConnection
@@ -212,7 +202,7 @@ class AMQPInterface(ToolboxInterface):
     _tool_box: ToolBox
     __amqp: _AMQP = None
     __connection_lock = asyncio.Lock()
-    __subscriptions = set[_MQTTSubscription]()
+    __subscriptions = set[_AMQPSubscription]()
     __logger: logging.Logger
     __conn_str: BrokerConnectionString
     
@@ -267,8 +257,8 @@ class AMQPInterface(ToolboxInterface):
     
     async def close(self) -> None:
         if self.__amqp and not self.__amqp.conn.is_closed:
-            self.__amqp.channel.close()
-            self.__amqp.conn.close()
+            await self.__amqp.channel.close()
+            await self.__amqp.conn.close()
             
     async def __aenter__(self):
         await self.open()
@@ -301,7 +291,7 @@ class AMQPInterface(ToolboxInterface):
     @cache
     def __generate_introspection(self) -> str:
         return DiscoveryResponse(
-            execute_schema=f"{_AMQPExchanges.EXECUTE.value}/{{tool_box_name}}/{{callable_path}}",
+            execute_schema=f"{_AMQPExchanges.EXECUTE.value}/{{callable_path}}",
             response_schema="{reply to}",
             tool_box_schema=json.loads(str(self._tool_box.__schema__)),
             interface="amqp"

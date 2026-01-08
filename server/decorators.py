@@ -1,5 +1,5 @@
 import inspect
-from server import schema
+from common import schema
 from typing import Callable, Any, TypeVar, Union
 from common.helpers.schema import gen_type_schema
 from common.exceptions import MissingDescriptionException
