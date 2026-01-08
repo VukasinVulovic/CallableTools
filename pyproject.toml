@@ -1,7 +1,7 @@
 [project]
-name = "mymcpv2"
+name = "Callable Tools"
 version = "0.1.0"
-description = "Add your description here"
+description = "A Framework for ez creation of functions that can be called remotely"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

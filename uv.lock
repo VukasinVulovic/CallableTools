@@ -169,7 +169,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mymcpv2"
+name = "CallableTools"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
