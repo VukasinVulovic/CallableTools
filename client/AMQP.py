@@ -24,15 +24,6 @@ class _AMQP:
     channel: aio_pika.abc.AbstractRobustChannel
     execute_exchange: aio_pika.abc.AbstractRobustExchange
     discovery_exchange: aio_pika.abc.AbstractRobustExchange
-    
-@dataclass(eq=True, frozen=False)
-class _AMQPSubscription:
-    routing_key: str
-    pending: bool
-    
-    def __hash__(self):
-        return hash(self.routing_key)
-
 
 #AMQP based
 class AMQPClient:
@@ -40,7 +31,7 @@ class AMQPClient:
     __connection_lock = asyncio.Lock()
     __logger: logging.Logger
     __conn_str: BrokerConnectionString
-    __discoveries: list[DiscoveryResponse] = []
+    __discoveries: set[DiscoveryResponse] = set()
     DISCOVERY_REPLY_TIMEOUT = 3
     MAX_DISCOVERIES=2
     
@@ -176,9 +167,9 @@ class AMQPClient:
             
         return None
 
-    async def __fetch_discovery(self, max_tbs: int) -> list[DiscoveryResponse]:
+    async def __fetch_discovery(self, max_tbs: int) -> set[DiscoveryResponse]:
         req_id = uuid.uuid4()
-        discovered = list[DiscoveryResponse]() #somehow convert to set
+        discovered = set[DiscoveryResponse]() #somehow convert to set
         
         try:            
             reply_queue = await self.__request(
@@ -197,7 +188,7 @@ class AMQPClient:
                         )
 
                         async with message.process():                                            
-                            discovered.append(DiscoveryResponse.model_validate_json(message.body))    
+                            discovered.add(DiscoveryResponse.model_validate_json(message.body))    
                     except asyncio.TimeoutError:
                         return discovered                               
         except (aio_pika.exceptions.AMQPError) as e:

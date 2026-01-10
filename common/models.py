@@ -57,3 +57,6 @@ class DiscoveryResponse(BaseModel):
     response_schema: str
     interface: str
     tool_box_schema: dict
+    
+    def __hash__(self):
+        return hash(self.tool_box_schema.get("name", "") + self.tool_box_schema.get("version", "") + self.interface)
