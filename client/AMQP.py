@@ -18,14 +18,6 @@ from common.schema import Tool, ToolBox
 class BrokerException(Exception):
     pass
 
-@dataclass(eq=True, frozen=False)
-class _AMQPSubscription:
-    routing_key: str
-    pending: bool
-    
-    def __hash__(self):
-        return hash(self.routing_key)
-
 @dataclass 
 class _AMQP:
     conn: aio_pika.abc.AbstractRobustConnection
@@ -46,7 +38,6 @@ class _AMQPSubscription:
 class AMQPClient:
     __amqp: _AMQP = None
     __connection_lock = asyncio.Lock()
-    __subscriptions = set[_AMQPSubscription]()
     __logger: logging.Logger
     __conn_str: BrokerConnectionString
     __discoveries: list[DiscoveryResponse] = []
@@ -192,7 +183,7 @@ class AMQPClient:
         try:            
             reply_queue = await self.__request(
                 exc=self.__amqp.discovery_exchange, 
-                routing_key=_AMQPExchanges.DISCOVERY.value,
+                routing_key="",
                 req_id=req_id,
                 body=f'{{"request_id": "{req_id}"}}',
             )

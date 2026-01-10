@@ -338,8 +338,8 @@ class AMQPInterface(ToolboxInterface):
                 
                 sub.pending = False
             
-            dq = await self.__amqp.channel.declare_queue(name=_AMQPExchanges.DISCOVERY.value, passive=False, durable=False)
-            await dq.bind(self.__amqp.discovery_exchange, routing_key=f"{_AMQPExchanges.DISCOVERY.value}#")
+            dq = await self.__amqp.channel.declare_queue(name="", passive=False, durable=False, exclusive=False)
+            await dq.bind(self.__amqp.discovery_exchange)
             await dq.consume(self.__handle_message, no_ack=False)
                 
         except (aio_pika.exceptions.AMQPError) as e:
