@@ -75,14 +75,16 @@ class AMQPClient:
                 name=_AMQPRoutes.DISCOVERY.value, 
                 type=aio_pika.ExchangeType.FANOUT, 
                 durable=False, 
-                passive=False
+                passive=False,
+                auto_delete=True
             )
             
             updates_exc = await channel.declare_exchange(
                 name=_AMQPRoutes.UPDATES.value, 
                 type=aio_pika.ExchangeType.FANOUT, 
                 durable=False, 
-                passive=False
+                passive=False,
+                auto_delete=True
             )
             
             self.__amqp = _AMQP(
@@ -182,7 +184,7 @@ class AMQPClient:
     async def __on_update(self, msg: aio_pika.abc.AbstractIncomingMessage):
         exc = msg.exchange if len(msg.exchange) > 0 else msg.routing_key.split(".")[0]
         
-        self.__logger.info(f"NEW Message at {exc}")
+        self.__logger.info(f"NEW update!")
         
         async with msg.process():
             try:
@@ -197,12 +199,11 @@ class AMQPClient:
             except Exception as e:
                 self.__logger.exception(e)
         
-
     async def __subscribe_updates(self) -> None:
         async with self.__discovery_lock:
             try:
                 #subscribe to tool changes
-                q = await self.__amqp.channel.declare_queue(name=_AMQPRoutes.UPDATES.value, passive=False, durable=False)
+                q = await self.__amqp.channel.declare_queue(name=_AMQPRoutes.UPDATES.value, passive=False, durable=False, auto_delete=True)
                 await q.bind(self.__amqp.execute_exchange, routing_key=_AMQPRoutes.UPDATES.value, robust=False)
                 await q.consume(self.__on_update)                            
             except (aio_pika.exceptions.AMQPError) as e:

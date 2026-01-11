@@ -8,4 +8,5 @@ dependencies = [
     "aio-pika>=9.5.8",
     "dotenv>=0.9.9",
     "pydantic>=2.12.5",
+    "watchdog>=6.0.0",
 ]

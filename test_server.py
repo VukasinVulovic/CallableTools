@@ -9,35 +9,19 @@ from server.tooling import ToolBox
 from dotenv import load_dotenv
 from common.helpers.connStringParser import BrokerConnectionString
 
+import tools
+
+logging.basicConfig(level=logging.INFO)
+
 load_dotenv(".env")
 load_dotenv(".env.local", override=True)
 
 VERSION="21_12_2025-dev-1234-testing"
 TOOLBOX_NAME = "TestingToolbox"
 
-logging.basicConfig(level=logging.INFO)
-
-from server import decorators
-
-
-@decorators.version("21_12_2025-dev-1234-testing")
-class MathWiz:
-    """
-    Mathematical functions for Arithmetics and other math things
-    """
-
-    @decorators.generate_method_schema
-    @staticmethod
-    def multiply(a: int, b: int) -> int:
-        """
-        Multiplies two numbers together.
-        """
-
-        return a * b
-
 async def main():
     ev = asyncio.Event()    
-    tb = ToolBox(TOOLBOX_NAME, "This toolbox is used for testing", [sys.modules[__name__]], Version.parse(VERSION))
+    tb = ToolBox(TOOLBOX_NAME, "This toolbox is used for testing", [tools], Version.parse(VERSION))
     
     async with AMQPInterface(tb, BrokerConnectionString(conn_str=os.getenv("BROKER"))):
         await ev.wait()

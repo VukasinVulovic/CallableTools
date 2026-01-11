@@ -40,14 +40,17 @@ class AMQPInterface(ToolboxInterface):
     _tool_box: ToolBox
     __amqp: _AMQP = None
     __connection_lock = asyncio.Lock()
+    __subscribtion_lock = asyncio.Lock()
     __subscriptions = set[_AMQPSubscription]()
     __logger: logging.Logger
     __conn_str: BrokerConnectionString
+    __discovery_subscribed: bool = False
     
     def __init__(self, tb: ToolBox, conn_str: BrokerConnectionString):
         self.__conn_str = conn_str
         self._tool_box = tb
         self.__logger = logging.getLogger(tb.name)
+        tb.on_change_cb = self.__send_updates
         
         if conn_str.type not in (BrokerType.AMQP, BrokerType.AMQPS):
             raise BrokerException("Supplied connection string is of type AMQP/AMQPS!")
@@ -81,15 +84,27 @@ class AMQPInterface(ToolboxInterface):
                 name=_AMQPRoutes.DISCOVERY.value, 
                 type=aio_pika.ExchangeType.FANOUT, 
                 durable=False, 
-                passive=False
+                passive=False,
+                auto_delete=True
             )
             
             updates_exc = await channel.declare_exchange(
                 name=_AMQPRoutes.UPDATES.value, 
                 type=aio_pika.ExchangeType.FANOUT, 
                 durable=False, 
+                passive=False,
+                auto_delete=True
+            )
+            
+            updates_q = await channel.declare_queue(
+                name=_AMQPRoutes.UPDATES.value,
+                auto_delete=True,
+                durable=False,
+                exclusive=False,
                 passive=False
             )
+            
+            await updates_q.bind(updates_exc)
             
             self.__amqp = _AMQP(
                 conn=conn,
@@ -115,6 +130,9 @@ class AMQPInterface(ToolboxInterface):
         return False
     
     async def __send_updates(self):
+        if not self.__amqp or self.__amqp.conn.is_closed:
+            return
+        
         res = DiscoveryResponse(
             execute_schema=f"{_AMQPRoutes.EXECUTE.value}/{{callable_path}}",
             response_schema="{reply to}",
@@ -122,11 +140,12 @@ class AMQPInterface(ToolboxInterface):
             updates_schema=_AMQPRoutes.UPDATES.value,
             interface="amqp"
         )
-        
+                        
         await self.__amqp.updates_exchange.publish(
             aio_pika.Message(
                 body=res.model_dump_json().encode()
-            )
+            ),
+            routing_key=_AMQPRoutes.UPDATES.value
         )
     
     async def __respond_to_execute(self, msg: aio_pika.abc.AbstractIncomingMessage) -> None:        
@@ -189,22 +208,32 @@ class AMQPInterface(ToolboxInterface):
                 self.__logger.exception(e)
     
     async def __subscribe(self): #process pending queue creations and subscriptions
-        try:
-            for tool in self._tool_box.tools:
-                sub = _AMQPSubscription(routing_key=f"{_AMQPRoutes.EXECUTE.value}.{self._tool_box.name}.{tool}", pending=True)
-                self.__subscriptions.add(sub)
+        if not self.__amqp or self.__amqp.conn.is_closed:
+            return
+        
+        async with self.__subscribtion_lock:
+            try:
+                for tool in self._tool_box.tools:
+                    sub = _AMQPSubscription(routing_key=f"{_AMQPRoutes.EXECUTE.value}.{self._tool_box.name}.{tool}", pending=True)
+                    
+                    if sub in self.__subscriptions:
+                        continue
+                    
+                    self.__subscriptions.add(sub)
+                    
+                    q = await self.__amqp.channel.declare_queue(name=sub.routing_key, passive=False, durable=True, exclusive=False)
+                    await q.bind(self.__amqp.execute_exchange, routing_key=sub.routing_key, robust=True)
+                    await q.consume(self.__handle_message)
+                    
+                    sub.pending = False
                 
-                q = await self.__amqp.channel.declare_queue(name=sub.routing_key, passive=False, durable=True)
-                await q.bind(self.__amqp.execute_exchange, routing_key=sub.routing_key, robust=True)
-                await q.consume(self.__handle_message)
+                if not self.__discovery_subscribed:
+                    dq = await self.__amqp.channel.declare_queue(name=_AMQPRoutes.DISCOVERY.value, passive=False, durable=False, exclusive=False)
+                    await dq.bind(self.__amqp.discovery_exchange)
+                    await dq.consume(self.__handle_message, no_ack=False)
+                    self.__discovery_subscribed = True
                 
-                sub.pending = False
-            
-            dq = await self.__amqp.channel.declare_queue(name="", passive=False, durable=False, exclusive=False)
-            await dq.bind(self.__amqp.discovery_exchange)
-            await dq.consume(self.__handle_message, no_ack=False)
-                
-        except (aio_pika.exceptions.AMQPError) as e:
-            raise BrokerException(e)
-        except Exception:
-            pass
+            except (aio_pika.exceptions.AMQPError) as e:
+                raise BrokerException(e)
+            except Exception:
+                pass
