@@ -1,11 +1,6 @@
 from enum import Enum
 
-
-class _MQTTTopics(Enum):
-    DISCOVERY = "$share/discover"
-    EXECUTE = "$share/execute"
-    RESPONSE = "response"
-
-class _AMQPExchanges(Enum):
+class _AMQPRoutes(Enum):
     DISCOVERY = "discover"
     EXECUTE = "execute"
+    UPDATES = "tools.update"

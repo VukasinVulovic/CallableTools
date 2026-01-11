@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 
-from server.interfaces.MessagingBroker import AMQPInterface, MQTTInterface
+from server.interfaces.MessagingBroker import AMQPInterface
 from common.schema import Version
 from server.tooling import ToolBox
 from dotenv import load_dotenv

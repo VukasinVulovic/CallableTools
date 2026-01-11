@@ -12,7 +12,7 @@ import aio_pika
 from common.exceptions import ToolNotFoundException, ToolRuntimeException, ToolValidationException
 from common.helpers.connStringParser import BrokerConnectionString, BrokerType
 from common.models import DiscoveryResponse, RunToolRequest, ToolResponse, ToolStatus
-from common.routes import _AMQPExchanges
+from common.routes import _AMQPRoutes
 from common.schema import Tool, ToolBox
 
 class BrokerException(Exception):
@@ -24,6 +24,7 @@ class _AMQP:
     channel: aio_pika.abc.AbstractRobustChannel
     execute_exchange: aio_pika.abc.AbstractRobustExchange
     discovery_exchange: aio_pika.abc.AbstractRobustExchange
+    updates_exchange: aio_pika.abc.AbstractRobustExchange
 
 #AMQP based
 class AMQPClient:
@@ -32,6 +33,9 @@ class AMQPClient:
     __logger: logging.Logger
     __conn_str: BrokerConnectionString
     __discoveries: set[DiscoveryResponse] = set()
+    __tasks: list[asyncio.Task] = []
+    __discovery_lock: asyncio.Lock = asyncio.Lock()
+    tools_discovered_ev: asyncio.Event = asyncio.Event()
     DISCOVERY_REPLY_TIMEOUT = 3
     MAX_DISCOVERIES=2
     
@@ -44,7 +48,7 @@ class AMQPClient:
         
         if conn_str.type not in (BrokerType.AMQP, BrokerType.AMQPS):
             raise BrokerException("Supplied connection string is of type AMQP/AMQPS!")
-        
+            
     async def open(self) -> None:
         async with self.__connection_lock:
             if self.__amqp and not self.__amqp.conn.is_closed:
@@ -61,14 +65,21 @@ class AMQPClient:
             channel = await conn.channel()
             
             execute_exc = await channel.declare_exchange(
-                name=_AMQPExchanges.EXECUTE.value, 
+                name=_AMQPRoutes.EXECUTE.value, 
                 type=aio_pika.ExchangeType.TOPIC, 
                 durable=True, 
                 passive=False
             )
             
             discover_exc = await channel.declare_exchange(
-                name=_AMQPExchanges.DISCOVERY.value, 
+                name=_AMQPRoutes.DISCOVERY.value, 
+                type=aio_pika.ExchangeType.FANOUT, 
+                durable=False, 
+                passive=False
+            )
+            
+            updates_exc = await channel.declare_exchange(
+                name=_AMQPRoutes.UPDATES.value, 
                 type=aio_pika.ExchangeType.FANOUT, 
                 durable=False, 
                 passive=False
@@ -78,14 +89,15 @@ class AMQPClient:
                 conn=conn,
                 channel=channel,
                 discovery_exchange=discover_exc,
-                execute_exchange=execute_exc
+                execute_exchange=execute_exc,
+                updates_exchange=updates_exc
             )
             
+            #subscribe to updates
+            self.__tasks.append(asyncio.create_task(self.__subscribe_updates()))
+
             #subscribe to discovery
-  
-            self.__logger.info("Runnint toolbox discovery...")
-            self.__discoveries = await self.__fetch_discovery(self.MAX_DISCOVERIES)
-            self.__logger.info(f"Discovered {len(self.__discoveries)} toolboxes.")
+            self.__tasks.append(asyncio.create_task(self.__fetch_discovery(self.MAX_DISCOVERIES)))
 
     @cache
     def __get_discovered_tool(self, tool_box_name: str, tool_name: str) -> tuple[DiscoveryResponse, Tool]:
@@ -166,39 +178,78 @@ class AMQPClient:
             raise
             
         return None
+        
+    async def __on_update(self, msg: aio_pika.abc.AbstractIncomingMessage):
+        exc = msg.exchange if len(msg.exchange) > 0 else msg.routing_key.split(".")[0]
+        
+        self.__logger.info(f"NEW Message at {exc}")
+        
+        async with msg.process():
+            try:
+                match exc:
+                    case _AMQPRoutes.UPDATES.value:
+                        self.__discoveries.update()
+                        self.__discoveries.add(DiscoveryResponse.model_validate_json(msg.body))  
+                        self.tools_discovered_ev.set()
+            
+            except (TypeError, AttributeError, ValueError) as e:
+                self.__logger.warning(f"Request invalid: {e}")
+            except Exception as e:
+                self.__logger.exception(e)
+        
+
+    async def __subscribe_updates(self) -> None:
+        async with self.__discovery_lock:
+            try:
+                #subscribe to tool changes
+                q = await self.__amqp.channel.declare_queue(name=_AMQPRoutes.UPDATES.value, passive=False, durable=False)
+                await q.bind(self.__amqp.execute_exchange, routing_key=_AMQPRoutes.UPDATES.value, robust=False)
+                await q.consume(self.__on_update)                            
+            except (aio_pika.exceptions.AMQPError) as e:
+                raise BrokerException(e)
+            except (TypeError, ValueError) as e:
+                self.__logger.warning(f"Received invalid updates response: {e}")
+            except Exception:
+                raise
 
     async def __fetch_discovery(self, max_tbs: int) -> set[DiscoveryResponse]:
-        req_id = uuid.uuid4()
-        discovered = set[DiscoveryResponse]() #somehow convert to set
-        
-        try:            
-            reply_queue = await self.__request(
-                exc=self.__amqp.discovery_exchange, 
-                routing_key="",
-                req_id=req_id,
-                body=f'{{"request_id": "{req_id}"}}',
-            )
+        async with self.__discovery_lock:
+            self.__logger.info("Running toolbox discovery...")
+            req_id = uuid.uuid4()
+            discovered = set[DiscoveryResponse]() #somehow convert to set
             
-            async with reply_queue.iterator() as i:
-                while len(discovered) < max_tbs:
-                    try:
-                        message = await asyncio.wait_for(
-                            i.__anext__(),
-                            timeout=self.DISCOVERY_REPLY_TIMEOUT,
-                        )
+            try:            
+                reply_queue = await self.__request(
+                    exc=self.__amqp.discovery_exchange, 
+                    routing_key="",
+                    req_id=req_id,
+                    body=f'{{"request_id": "{req_id}"}}',
+                )
+                
+                async with reply_queue.iterator() as i:
+                    while len(discovered) < max_tbs:
+                        try:
+                            message = await asyncio.wait_for(
+                                i.__anext__(),
+                                timeout=self.DISCOVERY_REPLY_TIMEOUT,
+                            )
 
-                        async with message.process():                                            
-                            discovered.add(DiscoveryResponse.model_validate_json(message.body))    
-                    except asyncio.TimeoutError:
-                        return discovered                               
-        except (aio_pika.exceptions.AMQPError) as e:
-            raise BrokerException(e)
-        except (TypeError, ValueError) as e:
-            self.__logger.warning(f"Received invalid discovery response: {e}")
-        except Exception:
-            raise
-            
-        return discovered
+                            async with message.process():                                            
+                                discovered.add(DiscoveryResponse.model_validate_json(message.body))    
+                        except asyncio.TimeoutError:
+                            self.__discoveries = discovered
+                            self.tools_discovered_ev.set()
+                            return discovered                               
+            except (aio_pika.exceptions.AMQPError) as e:
+                raise BrokerException(e)
+            except (TypeError, ValueError) as e:
+                self.__logger.warning(f"Received invalid discovery response: {e}")
+            except Exception:
+                raise
+                
+            self.__discoveries = discovered
+            self.tools_discovered_ev.set()
+            return discovered
   
     async def __request(self, exc: aio_pika.abc.AbstractRobustExchange, req_id: uuid, routing_key: str, body: bytes | str) -> aio_pika.abc.AbstractRobustQueue:
         #create reply queue
@@ -223,6 +274,9 @@ class AMQPClient:
         return q
     
     async def close(self) -> None:
+        for t in self.__tasks:
+            t.cancel()
+        
         if self.__amqp and not self.__amqp.conn.is_closed:
             await self.__amqp.channel.close()
             await self.__amqp.conn.close()

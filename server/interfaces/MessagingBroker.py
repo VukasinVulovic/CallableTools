@@ -7,12 +7,10 @@ from functools import cache
 from hashlib import md5
 
 import aio_pika
-from aiomqtt import Client as MQTTClient
-from aiomqtt import MqttError
 
 from common.helpers.connStringParser import BrokerConnectionString, BrokerType
 from common.models import DiscoveryRequest, DiscoveryResponse, ToolResponse
-from common.routes import _AMQPExchanges, _MQTTTopics
+from common.routes import _AMQPRoutes
 from server.interfaces.BaseInterface import ToolboxInterface
 from server.tooling import ToolBox
 
@@ -21,15 +19,6 @@ if sys.platform.startswith("win"): #Windows bs :D
 
 class BrokerException(Exception):
     pass
-
-@dataclass(eq=True, frozen=False)
-class _MQTTSubscription:
-    topic: str
-    qos: int
-    pending: bool
-    
-    def __hash__(self):
-        return hash(self.topic)
     
 @dataclass(eq=True, frozen=False)
 class _AMQPSubscription:
@@ -39,164 +28,13 @@ class _AMQPSubscription:
     def __hash__(self):
         return hash(self.routing_key)
 
-class MQTTInterface(ToolboxInterface):
-    _tool_box: ToolBox
-    __mqtt: MQTTClient = None
-    __is_connected: bool = False
-    __connect_task: asyncio.Task = None
-    __msg_task:  asyncio.Task = None
-    __connection_lock = asyncio.Lock()
-    __subscriptions = set[_MQTTSubscription]()
-    __logger: logging.Logger
-    __conn_str: BrokerConnectionString
-    
-    def __init__(self, tb: ToolBox, conn_str: BrokerConnectionString):
-        self._tool_box = tb
-        self.__logger = logging.getLogger(tb.name)
-        
-        if conn_str.type is not BrokerType.MQTT:
-            raise BrokerException("Supplied connection string is of type MQTT!")
-         
-        self.__conn_str = conn_str
-        
-    @property
-    def get_toolbox(self) -> ToolBox: self._tool_box
-         
-    async def open(self) -> None:
-        async with self.__connection_lock:
-            if self.__is_connected:
-                return
-            
-            if self.__connect_task:
-                self.__connect_task.cancel()
-            
-            self.__connect_task = asyncio.create_task(self.__connect_loop())
-    
-    async def close(self) -> None:
-        if self.__is_connected:
-            await self.__mqtt.__aexit__(None, None, None)
-            
-        if self.__connect_task:
-            self.__connect_task.cancel()
-    
-    async def __aenter__(self):
-        await self.open()
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.close()
-        return False
-    
-    async def __send_tool_response(self, res: ToolResponse):
-        await self.__mqtt.publish(f"{_MQTTTopics.RESPONSE.value}/{res.request_id}", payload=res.model_dump_json(), retain=True, qos=2)
-    
-    async def __respond_to_execute(self, topic: str, msg: str) -> None:
-        if not self.__is_connected:
-            return
-                
-        try:
-            #parse from topic and message
-            _, *tool = topic[len(_MQTTTopics.EXECUTE.value)+1:].split("/")
-            
-            async for res in self._tool_box.handle_raw_request(tool=".".join(tool), raw_request=msg):
-                await self.__send_tool_response(res)
-            
-        except Exception as e:
-            self.__logger.exception(e)
-    
-    @cache
-    def __generate_introspection(self) -> str:
-        return DiscoveryResponse(
-            execute_schema=f"{_MQTTTopics.EXECUTE.value}/{{tool_box_name}}/{{callable_path}}",
-            response_schema=f"{_MQTTTopics.RESPONSE.value}/{{request_id}}",
-            tool_box_schema=json.loads(str(self._tool_box.__schema__)),
-            interface="mqtt"
-        ).model_dump_json()
-    
-    async def __handle_message(self, topic: str, msg: str):
-        self.__logger.info(f"NEW Message at {topic}")
-        
-        try:
-        
-            match topic:
-                case _MQTTTopics.DISCOVERY.value:
-                    request_id = DiscoveryRequest.model_validate_json(msg).request_id
-                    await self.__mqtt.publish(topic=f"{_MQTTTopics.RESPONSE.value}/{request_id}", payload=self.__generate_introspection())
-                # case _MQTTTopics.DISCOVERY.
-                case topic if topic.startswith(_MQTTTopics.EXECUTE.value):
-                    # req.tool_box_name = topic
-                    await self.__respond_to_execute(topic, msg)
-        
-        
-        except (TypeError, AttributeError, ValueError) as e:
-            self.__logger.warning(f"User request invalid: {e}")
-        except Exception as e:
-            self.__logger.exception(e)
-    
-    async def __message_loop(self): #loop to process mqtt messages
-        if not self.__is_connected:
-            return
-                    
-        async for msg in self.__mqtt.messages:
-            await self.__handle_message(str(msg.topic), msg.payload.decode())
-    
-    async def __subscribe(self): #process pending queue creations and subscriptions
-        try:
-            for tool in self._tool_box.tools:
-                sub = _MQTTSubscription(topic=f"{_MQTTTopics.EXECUTE.value}/{self._tool_box.name}/{tool}", pending=True, qos=2)
-                self.__subscriptions.add(sub)
-                
-                await self.__mqtt.subscribe(topic=sub.topic, qos=sub.qos)
-                sub.pending = False
-            
-            await self.__mqtt.subscribe(topic=_MQTTTopics.DISCOVERY.value, qos=0)
-                
-        except (MqttError, aio_pika.exceptions.AMQPError) as e:
-            raise BrokerException(e)
-        except Exception:
-            pass
-    
-    async def __connect_loop(self): #auto-reconnect for mqtt
-        while True:
-            try:                 
-                if not self.__is_connected:
-                    self.__mqtt = MQTTClient(
-                        self.__conn_str.host, 
-                        self.__conn_str.port, 
-                        clean_session=False,
-                        identifier=f"{self._tool_box.name}-{md5(__file__.encode()).digest().hex()}", 
-                        password=self.__conn_str.password, 
-                        username=self.__conn_str.username
-                    )
-                    
-                    await self.__mqtt.__aenter__()
-                    self.__is_connected = True
-                    
-                    await self.__subscribe()
-                    
-                    if self.__msg_task:
-                        self.__msg_task.cancel()
-                    
-                    self.__msg_task = asyncio.create_task(self.__message_loop())
-            except MqttError as e:
-                self.__is_connected = False
-                for sub in self.__subscriptons:
-                    sub.pending = True
-                    
-                logging.exception(e)
-                
-            except Exception as e:
-                logging.exception(e)
-                raise
-            
-            await asyncio.sleep(3)
-            
 @dataclass 
 class _AMQP:
     conn: aio_pika.abc.AbstractRobustConnection
     channel: aio_pika.abc.AbstractRobustChannel
     execute_exchange: aio_pika.abc.AbstractRobustExchange
     discovery_exchange: aio_pika.abc.AbstractRobustExchange
+    updates_exchange: aio_pika.abc.AbstractRobustExchange
  
 class AMQPInterface(ToolboxInterface):
     _tool_box: ToolBox
@@ -233,14 +71,21 @@ class AMQPInterface(ToolboxInterface):
             channel = await conn.channel()
             
             execute_exc = await channel.declare_exchange(
-                name=_AMQPExchanges.EXECUTE.value, 
+                name=_AMQPRoutes.EXECUTE.value, 
                 type=aio_pika.ExchangeType.TOPIC, 
                 durable=True, 
                 passive=False
             )
             
             discover_exc = await channel.declare_exchange(
-                name=_AMQPExchanges.DISCOVERY.value, 
+                name=_AMQPRoutes.DISCOVERY.value, 
+                type=aio_pika.ExchangeType.FANOUT, 
+                durable=False, 
+                passive=False
+            )
+            
+            updates_exc = await channel.declare_exchange(
+                name=_AMQPRoutes.UPDATES.value, 
                 type=aio_pika.ExchangeType.FANOUT, 
                 durable=False, 
                 passive=False
@@ -250,7 +95,8 @@ class AMQPInterface(ToolboxInterface):
                 conn=conn,
                 channel=channel,
                 discovery_exchange=discover_exc,
-                execute_exchange=execute_exc
+                execute_exchange=execute_exc,
+                updates_exchange=updates_exc
             )
             
             await self.__subscribe()
@@ -268,13 +114,28 @@ class AMQPInterface(ToolboxInterface):
         await self.close()
         return False
     
+    async def __send_updates(self):
+        res = DiscoveryResponse(
+            execute_schema=f"{_AMQPRoutes.EXECUTE.value}/{{callable_path}}",
+            response_schema="{reply to}",
+            tool_box_schema=json.loads(str(self._tool_box.__schema__)),
+            updates_schema=_AMQPRoutes.UPDATES.value,
+            interface="amqp"
+        )
+        
+        await self.__amqp.updates_exchange.publish(
+            aio_pika.Message(
+                body=res.model_dump_json().encode()
+            )
+        )
+    
     async def __respond_to_execute(self, msg: aio_pika.abc.AbstractIncomingMessage) -> None:        
         if not self.__amqp or self.__amqp.conn.is_closed:
             return
                 
         try:
             #parse from topic and message
-            _, *tool = msg.routing_key[len(_AMQPExchanges.EXECUTE.value)+1:].split(".")
+            _, *tool = msg.routing_key[len(_AMQPRoutes.EXECUTE.value)+1:].split(".")
             
             async for res in self._tool_box.handle_raw_request(tool=".".join(tool), raw_request=msg.body):
                 await self.__amqp.channel.default_exchange.publish(
@@ -291,9 +152,10 @@ class AMQPInterface(ToolboxInterface):
     @cache
     def __generate_introspection(self) -> str:
         return DiscoveryResponse(
-            execute_schema=f"{_AMQPExchanges.EXECUTE.value}/{{callable_path}}",
+            execute_schema=f"{_AMQPRoutes.EXECUTE.value}/{{callable_path}}",
             response_schema="{reply to}",
             tool_box_schema=json.loads(str(self._tool_box.__schema__)),
+            updates_schema=_AMQPRoutes.UPDATES.value,
             interface="amqp"
         ).model_dump_json().encode()
     
@@ -309,7 +171,7 @@ class AMQPInterface(ToolboxInterface):
             try:
             
                 match exc:
-                    case _AMQPExchanges.DISCOVERY.value:
+                    case _AMQPRoutes.DISCOVERY.value:
                         await self.__amqp.channel.default_exchange.publish(
                             aio_pika.Message(
                                 body=self.__generate_introspection(),
@@ -318,7 +180,7 @@ class AMQPInterface(ToolboxInterface):
                             routing_key=msg.reply_to
                         )
                         
-                    case _AMQPExchanges.EXECUTE.value:
+                    case _AMQPRoutes.EXECUTE.value:
                         await self.__respond_to_execute(msg)
             
             except (TypeError, AttributeError, ValueError) as e:
@@ -329,7 +191,7 @@ class AMQPInterface(ToolboxInterface):
     async def __subscribe(self): #process pending queue creations and subscriptions
         try:
             for tool in self._tool_box.tools:
-                sub = _AMQPSubscription(routing_key=f"{_AMQPExchanges.EXECUTE.value}.{self._tool_box.name}.{tool}", pending=True)
+                sub = _AMQPSubscription(routing_key=f"{_AMQPRoutes.EXECUTE.value}.{self._tool_box.name}.{tool}", pending=True)
                 self.__subscriptions.add(sub)
                 
                 q = await self.__amqp.channel.declare_queue(name=sub.routing_key, passive=False, durable=True)

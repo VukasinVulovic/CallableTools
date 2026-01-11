@@ -55,6 +55,7 @@ class DiscoveryRequest(BaseModel):
 class DiscoveryResponse(BaseModel):
     execute_schema: str
     response_schema: str
+    updates_schema: str
     interface: str
     tool_box_schema: dict
     

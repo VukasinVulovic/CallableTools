@@ -4,10 +4,10 @@
 ## 2 component design
 
 ### "Server"
-A AMQP/MQTT consumer that processes the requests and runs defined python functions
+A AMQP consumer that processes the requests and runs defined python functions
 
 ### Client
-A AMQP (Soon MQTT support?) publisher that publishes run function requests
+A AMQP publisher that publishes run function requests
 
 ## Features
 - Auto Discovery (Client sends discovery message, all "servers" respond with their offer)
