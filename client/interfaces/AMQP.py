@@ -37,6 +37,7 @@ class AMQPClient:
     __discovery_lock: asyncio.Lock = asyncio.Lock()
     tools_discovered_ev: asyncio.Event = asyncio.Event()
     DISCOVERY_REPLY_TIMEOUT = 3
+    TOOL_REPLY_TIMEOUT=120
     MAX_DISCOVERIES=2
     
     @property
@@ -144,38 +145,31 @@ class AMQPClient:
             
             async with reply_queue.iterator() as i:
                 while True:
-                    try:
-                        message = await asyncio.wait_for(
-                            i.__anext__(),
-                            timeout=self.DISCOVERY_REPLY_TIMEOUT,
-                        )
+                    message = await asyncio.wait_for(
+                        i.__anext__(),
+                        timeout=self.TOOL_REPLY_TIMEOUT,
+                    )
 
-                        async with message.process():                                            
-                            res = ToolResponse.model_validate_json(message.body)
-                            
-                            if res.request_id != req_id:
-                                continue
-                            
-                            match res.status:
-                                case ToolStatus.REJECTED:
-                                    raise ToolValidationException(res.output)
-                                case ToolStatus.ACCEPTED: #TODO: handle accept
-                                    pass
-                                case ToolStatus.PROCESSED:
-                                    if not res.success:
-                                        raise ToolRuntimeException(res.output)
-                                    
-                                    return res.output
-                                    
-                                    
-                            
-                            # discovery.append(DiscoveryResponse.model_validate_json(message.body))    
-                    except asyncio.TimeoutError:
-                        return discovery                               
+                    async with message.process():                                            
+                        res = ToolResponse.model_validate_json(message.body)
+                        
+                        if res.request_id != req_id:
+                            continue
+                        
+                        match res.status:
+                            case ToolStatus.REJECTED:
+                                raise ToolValidationException(res.output)
+                            case ToolStatus.ACCEPTED: #TODO: handle accept
+                                pass
+                            case ToolStatus.PROCESSED:
+                                if not res.success:
+                                    raise ToolRuntimeException(res.output)
+                                
+                                return res.output
         except (aio_pika.exceptions.AMQPError) as e:
             raise BrokerException(e)
         except (TypeError, ValueError) as e:
-            self.__logger.warning(f"Received invalid discovery response: {e}")
+            self.__logger.warning(f"Received invalid tool response: {e}")
         except Exception:
             raise
             

@@ -1,5 +1,5 @@
 import asyncio
-import importlib
+import importlib.util
 import inspect
 import logging
 import os
@@ -20,18 +20,12 @@ from server.decorators import generate_method_schema
 from watchdog.observers import Observer
 from watchdog.events import PatternMatchingEventHandler, FileModifiedEvent
 
-def _reload_module_from_path(path: str):
-    path = Path(path).resolve()
-    module_name = os.path.splitext(os.path.basename(path))[0]
-
-    importlib.reload(sys.modules[module_name])
-
 #TODO: add validate_tool
 class ToolBox:
     __name: str = None
     __version: schema.Version = None
     __description: str = None
-    __modules: list[pyTypes.ModuleType] = []
+    __modules: dict[str, pyTypes.ModuleType] = dict()
     
     __schema__: schema.ToolBox = None
     __tools: dict[str, callable] = dict()
@@ -45,13 +39,31 @@ class ToolBox:
     def __init__(self, name: str, description: str, modules: list[pyTypes.ModuleType], version: schema.Version = None):
         self.__name = name
         self.__description = description
-        self.__modules = modules
+        self.__modules = { m.__name__:m for m in modules } 
         self.__version = version
         self.__logger = logging.getLogger(f"TB-{name}")
         self.__observe_updates()
         self.__load_schema()
         self.__loop = asyncio.get_event_loop()
         self.__last_file_change = 0
+
+    def _reload_module_from_path(self, path: str) -> str:
+        p = Path(path).resolve()
+        module_name = p.stem
+
+        sys.modules.pop(module_name, None)
+
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load module from {path}")
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        self.__modules[module_name] = module
+
+        return module_name
 
     def __on_file_change(self, e: FileModifiedEvent):
         if not self._on_change_cb:
@@ -64,20 +76,24 @@ class ToolBox:
         
         self.__last_file_change = now
         
-        _reload_module_from_path(e.src_path)
-        
-        self.__load_schema()
-        asyncio.run_coroutine_threadsafe(self._on_change_cb(), self.__loop)
+        try:
+            module = self._reload_module_from_path(e.src_path)
+            self.__logger.info(f"Detected module {module} update!")
+
+            self.__load_schema()
+            asyncio.run_coroutine_threadsafe(self._on_change_cb(), self.__loop)
+        except Exception as e:
+            self.__logger.exception(e)
         
     def __observe_updates(self):
         handler = PatternMatchingEventHandler(
-            patterns=list(map(lambda m: m.__file__, self.__modules)),
+            patterns=list(map(lambda m: m.__file__, self.__modules.values())),
             ignore_directories=True
         )
         
         handler.on_modified = handler.on_created = handler.on_moved = self.__on_file_change
         
-        for dir in list(map(lambda m: str(Path(m.__file__).resolve().parent), self.__modules)):
+        for dir in list(map(lambda m: str(Path(m.__file__).resolve().parent), self.__modules.values())):
             self.__file_observer.schedule(path=dir, recursive=False, event_handler=handler)
         
         self.__file_observer.start()
@@ -85,7 +101,7 @@ class ToolBox:
     def __load_schema(self):
         tool_groups = list[schema.ToolGroup]()
 
-        for mod in self.__modules:
+        for mod in self.__modules.values():
             for _, cls in inspect.getmembers(mod):
                 tools = []
 
@@ -103,6 +119,8 @@ class ToolBox:
 
                         if func.__schema__.version is None:
                             raise MissingVersionException()
+                        
+                        self.__logger.info(f"Generating schema for {self.__name}.{func.__schema__.name}")
                         
                         func.__schema__.callable_path = f"{self.__name}.{func.__schema__.name}"
 

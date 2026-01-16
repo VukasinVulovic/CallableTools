@@ -89,7 +89,7 @@ class SchemaParser:
 
             #already ok type
             if gen_type_schema(param) is func_schema.parameter_schema[param]:
-                output_params[param] = param
+                output_params[param] = val
                 continue
 
             try:

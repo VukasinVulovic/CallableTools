@@ -1,17 +1,23 @@
 from server import decorators
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 @decorators.version("21_12_2025-dev-1234-testing")
-class MathWiz:
+class System:
     """
-    Mathematical functions for Arithmetics and other math things
-    test
+    Does stuff with the system
     """
 
     @decorators.generate_method_schema
     @staticmethod
-    def multiply(a: int, b: int) -> int:
+    def current_datetime(timezone:str="UTC") -> str:
         """
-        Multiplies two numbers together.
-        """
+        Returns the current date and time for a specified timezone.
 
-        return a * b*1
+        Args:
+            timezone (str): Time zone name, default is UTC
+            
+        Returns:
+            result is current date/time as timestamp string
+        """        
+        return datetime.now(ZoneInfo(key=timezone)).isoformat()

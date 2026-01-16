@@ -21,14 +21,12 @@ async def main():
     
     async with AMQPClient(BrokerConnectionString(conn_str=os.getenv("BROKER"))) as c:
         await c.tools_discovered_ev.wait()
-        
+                                    
         try:
-            res = await c.execute("TestingToolbox", "MathWiz.multiply", { "a": "2", "b": 2 })
+            res = await c.execute("TestingToolbox", "System.request_test", { "url": "https://google.com" })
             print(f"Tool Result: {res}")
         except (ToolValidationException, ToolRuntimeException) as e:
             print(f"Tool Exception: {e}")
-
-        await ev.wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
