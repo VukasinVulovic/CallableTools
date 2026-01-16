@@ -23,7 +23,7 @@ async def main():
         await c.tools_discovered_ev.wait()
                                     
         try:
-            res = await c.execute("TestingToolbox", "System.request_test", { "url": "https://google.com" })
+            res = await c.execute("TestingToolbox", "System.current_datetime", { "timezone": "Europe/Belgrade" })
             print(f"Tool Result: {res}")
         except (ToolValidationException, ToolRuntimeException) as e:
             print(f"Tool Exception: {e}")

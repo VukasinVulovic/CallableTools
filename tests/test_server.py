@@ -9,7 +9,7 @@ from server.tooling import ToolBox
 from dotenv import load_dotenv
 from common.helpers.connStringParser import BrokerConnectionString
 
-import tests.tools as tools
+import tests as tools
 
 logging.basicConfig(level=logging.INFO)
 
