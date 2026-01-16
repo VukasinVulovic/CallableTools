@@ -12,13 +12,7 @@ dotenv.load_dotenv(".env.local", override=True)
 
 logging.basicConfig(level=logging.INFO)
 
-async def Multiploop():
-    for i in range(0, 100):
-        yield i
-
-async def main():
-    ev = asyncio.Event()
-    
+async def main():    
     async with AMQPClient(BrokerConnectionString(conn_str=os.getenv("BROKER"))) as c:
         await c.tools_discovered_ev.wait()
                                     

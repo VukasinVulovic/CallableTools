@@ -114,7 +114,11 @@ class AMQPInterface(ToolboxInterface):
                 updates_exchange=updates_exc
             )
             
+            self.__logger.info("Connected and subscribing...")
+            
             await self.__subscribe()
+            self.__logger.info("Subscribed")
+            
     
     async def close(self) -> None:
         if self.__amqp and not self.__amqp.conn.is_closed:
@@ -127,11 +131,14 @@ class AMQPInterface(ToolboxInterface):
 
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.close()
+        self.__logger.info("Exited")
         return False
     
     async def __send_updates(self):
         if not self.__amqp or self.__amqp.conn.is_closed:
             return
+        
+        self.__logger.info("Sending schema update...")
         
         res = DiscoveryResponse(
             execute_schema=f"{_AMQPRoutes.EXECUTE.value}/{{callable_path}}",

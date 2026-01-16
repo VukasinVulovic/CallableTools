@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from datetime import date, datetime
+from hashlib import md5
 
 @dataclass
 class Version:
@@ -75,3 +76,9 @@ class ToolBox:
             "tool_groups": [{",".join([str(tg) for tg in self.tool_groups])}]
         }}
         """
+        
+    def signature_hash(self) -> str: 
+        return md5(str(self).encode()).digest().hex()
+    
+    def __hash__(self):
+        return hash(self.signature_hash())

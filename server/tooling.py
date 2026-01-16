@@ -34,7 +34,7 @@ class ToolBox:
     _on_change_cb: Callable
     __file_observer =  Observer()
     
-    UPDATE_DEBOUNCE_DELAY=0.3
+    UPDATE_DEBOUNCE_DELAY=0.5
     
     def __init__(self, name: str, description: str, modules: list[pyTypes.ModuleType], version: schema.Version = None):
         self.__name = name
@@ -47,7 +47,7 @@ class ToolBox:
         self.__loop = asyncio.get_event_loop()
         self.__last_file_change = 0
 
-    def _reload_module_from_path(self, path: str) -> str:
+    def __reload_module_from_path(self, path: str) -> str:
         p = Path(path).resolve()
         module_name = p.stem
 
@@ -77,11 +77,20 @@ class ToolBox:
         self.__last_file_change = now
         
         try:
-            module = self._reload_module_from_path(e.src_path)
+            module = self.__reload_module_from_path(e.src_path)
             self.__logger.info(f"Detected module {module} update!")
 
+            prev_sig = self.__schema__.signature_hash() 
+
             self.__load_schema()
-            asyncio.run_coroutine_threadsafe(self._on_change_cb(), self.__loop)
+            
+            new_sig = self.__schema__.signature_hash()
+            self.__logger.info(f"Signature check {prev_sig} vs {new_sig}")
+            
+            if new_sig != prev_sig: #only send update if signature changed
+                asyncio.run_coroutine_threadsafe(self._on_change_cb(), self.__loop)
+
+        
         except Exception as e:
             self.__logger.exception(e)
         

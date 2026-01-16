@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import sys
 
 from server.interfaces.MessagingBroker import AMQPInterface
 from common.schema import Version
@@ -9,7 +8,7 @@ from server.tooling import ToolBox
 from dotenv import load_dotenv
 from common.helpers.connStringParser import BrokerConnectionString
 
-import tests as tools
+from . import tools
 
 logging.basicConfig(level=logging.INFO)
 
