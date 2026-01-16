@@ -11,7 +11,6 @@ import aio_pika
 from common.helpers.connStringParser import BrokerConnectionString, BrokerType
 from common.models import DiscoveryRequest, DiscoveryResponse, ToolResponse
 from common.routes import _AMQPRoutes
-from server.interfaces.BaseInterface import ToolboxInterface
 from server.tooling import ToolBox
 
 if sys.platform.startswith("win"): #Windows bs :D
@@ -36,7 +35,7 @@ class _AMQP:
     discovery_exchange: aio_pika.abc.AbstractRobustExchange
     updates_exchange: aio_pika.abc.AbstractRobustExchange
  
-class AMQPInterface(ToolboxInterface):
+class AMQPInterface():
     _tool_box: ToolBox
     __amqp: _AMQP = None
     __connection_lock = asyncio.Lock()
