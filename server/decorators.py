@@ -1,8 +1,8 @@
 import inspect
-from common import schema
+from ..common import schema
 from typing import Callable, Any, TypeVar, Union
-from common.helpers.schema import gen_type_schema
-from common.exceptions import MissingDescriptionException
+from CallableTools.common.helpers.schema import gen_type_schema
+from CallableTools.common.exceptions import MissingDescriptionException
 
 DECORATABLE_TYPE = TypeVar("T", bound=Union[type, Callable[..., Any]])
 
@@ -32,6 +32,7 @@ def generate_method_schema(func: Callable):
             parameter_schema=dict([(item[0], gen_type_schema(item[1])) for item in dict(filter(lambda a: a[0] != "return", f.__annotations__.items())).items()]), \
             required_parameters=[name for name, param in sig.parameters.items() if param.default is inspect.Parameter.empty], \
             output_schema=gen_type_schema(f.__annotations__.get('return')) if f.__annotations__.get('return') is not None else None, \
+            callable_path="???",
             version=ver
         )
 

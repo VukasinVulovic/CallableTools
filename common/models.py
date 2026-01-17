@@ -1,7 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pydantic import BaseModel
-from common.exceptions import CouldNotParseToolRequestException
+
+from CallableTools.common.schema import ToolBox
+from .exceptions import CouldNotParseToolRequestException
 from enum import Enum
 from typing import Optional
 import uuid
@@ -54,7 +56,7 @@ class DiscoveryResponse(BaseModel):
     response_schema: str
     updates_schema: str
     interface: str
-    tool_box_schema: dict
+    tool_box_schema: ToolBox
     
     def __hash__(self):
-        return hash(self.tool_box_schema.get("name", "") + self.tool_box_schema.get("version", "") + self.interface)
+        return hash(self.tool_box_schema.name + str(self.tool_box_schema.version) + self.interface)

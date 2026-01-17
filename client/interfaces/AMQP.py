@@ -4,16 +4,15 @@ from functools import cache
 from hashlib import md5
 from itertools import chain
 import logging
-from typing import AsyncGenerator
 import uuid
 
 import aio_pika
 
-from common.exceptions import ToolNotFoundException, ToolRuntimeException, ToolValidationException
-from common.helpers.connStringParser import BrokerConnectionString, BrokerType
-from common.models import DiscoveryResponse, RunToolRequest, ToolResponse, ToolStatus
-from common.routes import _AMQPRoutes
-from common.schema import Tool, ToolBox
+from ...common.exceptions import ToolNotFoundException, ToolRuntimeException, ToolValidationException
+from ...common.helpers.connStringParser import BrokerConnectionString, BrokerType
+from ...common.models import DiscoveryResponse, RunToolRequest, ToolResponse, ToolStatus
+from ...common.routes import _AMQPRoutes
+from ...common.schema import Tool, ToolBox
 
 class BrokerException(Exception):
     pass
@@ -100,22 +99,22 @@ class AMQPClient:
             self.__tasks.append(asyncio.create_task(self.__subscribe_updates()))
 
             #subscribe to discovery
-            self.__tasks.append(asyncio.create_task(self.__fetch_discovery(self.MAX_DISCOVERIES)))
+            self.__tasks.append(asyncio.create_task(self.fetch_discovery(self.MAX_DISCOVERIES)))
 
     @cache
     def __get_discovered_tool(self, tool_box_name: str, tool_name: str) -> tuple[DiscoveryResponse, Tool]:
-        discovered: DiscoveryResponse = next((d for d in self.__discoveries if d.tool_box_schema.get("name") == tool_box_name), None)
+        discovered: DiscoveryResponse = next((d for d in self.__discoveries if d.tool_box_schema.name == tool_box_name), None)
         
         if discovered is None:
             raise ToolNotFoundException()
         
-        tools = list(chain.from_iterable(tg.get("tools") for tg in discovered.tool_box_schema.get("tool_groups")))
-        tool:Tool = next((t for t in tools if t.get("name") == tool_name), None)
+        tools = list(chain.from_iterable(tg.tools for tg in discovered.tool_box_schema.tool_groups))
+        tool:Tool = next((t for t in tools if t.name == tool_name), None)
         
         if tool is None:
             raise ToolNotFoundException()
         
-        return (discovered, Tool(**tool))
+        return (discovered, tool)
 
     async def execute(self, tool_box_name: str, tool_name: str, params: dict={}) -> object | None:
         #TODO: validate from discovered tools
@@ -207,7 +206,7 @@ class AMQPClient:
             except Exception:
                 raise
 
-    async def __fetch_discovery(self, max_tbs: int) -> set[DiscoveryResponse]:
+    async def fetch_discovery(self, max_tbs: int) -> set[DiscoveryResponse]:
         async with self.__discovery_lock:
             self.__logger.info("Running toolbox discovery...")
             req_id = uuid.uuid4()
