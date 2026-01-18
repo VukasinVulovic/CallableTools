@@ -14,3 +14,6 @@ dependencies = [
     "pydantic>=2.12.5",
     "watchdog>=6.0.0",
 ]
+
+[tool.setuptools]
+packages = ["server", "common", "client"]
