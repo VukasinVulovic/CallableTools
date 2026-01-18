@@ -36,7 +36,10 @@ class ToolBox:
     
     UPDATE_DEBOUNCE_DELAY=0.5
     
-    def __init__(self, name: str, description: str, modules: list[pyTypes.ModuleType], version: schema.Version = None):
+    def __init__(self, name: str, description: str, modules: list[pyTypes.ModuleType], version: schema.Version):
+        if version is None:
+            raise MissingVersionException()
+        
         self.__name = name
         self.__description = description
         self.__modules = { m.__name__:m for m in modules } 
