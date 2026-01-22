@@ -8,12 +8,17 @@ from pydantic import BaseModel, field_validator
 from pydantic_core import PydanticCustomError, core_schema
 from pydantic.dataclasses import dataclass as pydantic_dataclass
         
+from pydantic.dataclasses import dataclass as pydantic_dataclass
+from pydantic_core import core_schema, PydanticCustomError
+from datetime import date, datetime
+
+
 @pydantic_dataclass
 class Version:
     date: date
     isProduction: bool
     id: int
-    tag: Optional[str] = None
+    tag: str | None = None
 
     def __str__(self) -> str:
         return (
@@ -38,20 +43,25 @@ class Version:
         )
 
     @classmethod
-    def __get_pydantic_core_schema__(cls, source_schema, handler):
-        base_schema = handler(source_schema)
+    def __get_pydantic_core_schema__(cls, source_type, handler):
+        base_schema = handler(source_type)
 
-        def parse_string(v):
-            if not isinstance(v, str):
-                raise PydanticCustomError("version.type_error", "Expected string")
-            try:
-                return cls.parse(v)
-            except Exception as e:
-                raise PydanticCustomError("version.parse_error", str(e))
+        def before_validate(v, info):
+            if isinstance(v, cls):
+                return v
+    
+            if isinstance(v, str):
+                try:
+                    return cls.parse(v)
+                except Exception as e:
+                    raise PydanticCustomError("version.parse_error", str(e))
+                
+            return v
 
-        string_schema = core_schema.no_info_plain_validator_function(parse_string)
-
-        return core_schema.union_schema([string_schema, base_schema])
+        return core_schema.with_info_before_validator_function(
+            before_validate,
+            base_schema,
+        )
         
 @dataclass
 class Tool():
